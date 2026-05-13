@@ -1,0 +1,39 @@
+# Python virtual environment
+venv/
+.venv/
+
+# Environment files
+.env
+.env.*
+
+# Python cache
+__pycache__/
+*.pyc
+
+# VSCode settings
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local databases
+*.db
+*.sqlite3
+
+# Pytest cache
+.pytest_cache/
+
+# Mypy cache
+.mypy_cache/
+
+# Temporary files
+temp/
+tmp/
+
+# Secrets
+secrets.json
+credentials.json
