@@ -1,19 +1,18 @@
 # app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 import uvicorn
 
-# IMPORTANT: Use absolute imports when running with python -m
 from app.services.agent import BykeManiaAgent
 
 app = FastAPI(
     title="BykeMania OpsAI",
-    description="Natural Language AI Agent for Operations Team",
+    description="Natural Language AI Agent for BykeMania Operations Team",
     version="0.1.0"
 )
 
-# CORS (for future frontend / Streamlit / Slack)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,7 +21,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize agent once at startup
 agent = BykeManiaAgent()
 
 class ChatRequest(BaseModel):
@@ -30,29 +28,26 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 async def root():
-    return {
-        "message": "BykeMania OpsAI is running 🚀",
-        "status": "healthy",
-        "version": "0.1.0"
-    }
+    return {"message": "BykeMania OpsAI is running 🚀"}
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    """Main endpoint for all natural language operational queries"""
+    """Returns CLEAN readable text (best for Swagger UI)"""
     try:
         response_text = await agent.process_query(request.query)
-        return {
-            "query": request.query,
-            "response": response_text,
-            "status": "success"
-        }
+        
+        # This makes the response look clean in Swagger
+        return PlainTextResponse(
+            content=response_text,
+            media_type="text/plain"
+        )
+        
     except Exception as e:
         print(f"[ERROR] {e}")
-        return {
-            "query": request.query,
-            "response": "Sorry, something went wrong while processing your query.",
-            "status": "error"
-        }
+        return PlainTextResponse(
+            content="Sorry, something went wrong while processing your query.",
+            status_code=500
+        )
 
 
 if __name__ == "__main__":
