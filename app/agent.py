@@ -1,14 +1,9 @@
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, SystemMessage
 import yaml
-from app.tools.sir_optimized_api import sir_optimized_api_tool
+from app.tools.optimized_api import sir_optimized_api_tool
 from app.utils.llm_client import llm
-from app.prompts.system_prompts import load_system_prompt  # new import
-
-def load_system_prompt():
-    with open("app/prompts/system_prompts.yaml", "r") as f:
-        data = yaml.safe_load(f)
-    return data["system_prompt"]
+from app.prompts.system_prompts import load_system_prompt   # if you have this file
 
 def create_agent():
     graph = StateGraph(dict)
@@ -17,7 +12,6 @@ def create_agent():
         messages = state["messages"]
         system_prompt_text = load_system_prompt()
         
-        # Add the system instructions + tool info
         full_messages = [SystemMessage(content=system_prompt_text)] + messages
         tool_info = f"Available tool: {sir_optimized_api_tool['description']}"
         response = llm.invoke(

@@ -9,8 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
-# Correct import - agent.py is in tools folder
-from app.tools.agent import BykeManiaAgent
+# CORRECT IMPORT - agent.py is now directly in the app/ folder
+from app.agent import BykeManiaAgent
 
 app = FastAPI(
     title="BykeMania AI Agent",
