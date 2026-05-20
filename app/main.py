@@ -1,15 +1,20 @@
-# app/main.py
+import sys
+import os
+
+# CRITICAL FIX FOR WINDOWS IMPORT ISSUES
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 import uvicorn
 
-from app.services.agent import BykeManiaAgent
+# Correct import - agent.py is in tools folder
+from app.tools.agent import BykeManiaAgent
 
 app = FastAPI(
-    title="BykeMania OpsAI",
-    description="Natural Language AI Agent for BykeMania Operations Team",
+    title="BykeMania AI Agent",
+    description="Natural Language AI Agent for BykeMania",
     version="0.1.0"
 )
 
@@ -28,27 +33,24 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 async def root():
-    return {"message": "BykeMania OpsAI is running 🚀"}
+    return {"message": "BykeMania AI Agent is running 🚀", "status": "healthy"}
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    """Returns CLEAN readable text (best for Swagger UI)"""
     try:
         response_text = await agent.process_query(request.query)
-        
-        # This makes the response look clean in Swagger
-        return PlainTextResponse(
-            content=response_text,
-            media_type="text/plain"
-        )
-        
+        return {
+            "query": request.query,
+            "response": response_text,
+            "status": "success"
+        }
     except Exception as e:
         print(f"[ERROR] {e}")
-        return PlainTextResponse(
-            content="Sorry, something went wrong while processing your query.",
-            status_code=500
-        )
-
+        return {
+            "query": request.query,
+            "response": "Sorry, something went wrong.",
+            "status": "error"
+        }
 
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)

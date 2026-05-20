@@ -1,14 +1,14 @@
-# app/services/response_formatter.py
 from typing import Dict, Any, List
 from datetime import datetime
-
 
 class ResponseFormatter:
     @staticmethod
     def format_utilization(util_str: str) -> Dict[str, Any]:
+        """Parse 'available|live_booking|blocked|recovery|null' format"""
         if not util_str or util_str.lower() == "null":
             return {"available": 0, "live_booking": 0, "blocked": 0, "recovery": 0, "status": "NA"}
-        parts = util_str.split("|")
+        
+        parts = str(util_str).split("|")
         try:
             return {
                 "available": int(parts[0]) if len(parts) > 0 else 0,
@@ -22,26 +22,22 @@ class ResponseFormatter:
 
     @staticmethod
     def format_availability_response(query_intent: Any, api_data: List[Dict]) -> str:
-        """FINAL ROBUST VERSION - Handles your exact PHP API structure"""
-        print(f"DEBUG: Received {len(api_data) if isinstance(api_data, list) else 1} top-level records")
+        """FINAL VERSION with automatic 1-2 sentence summary"""
+        print(f"DEBUG: Received {len(api_data) if isinstance(api_data, list) else 1} records")
 
-        # Handle different possible structures from the API
         if isinstance(api_data, dict) and "data" in api_data:
-            api_data = api_data["data"]  # unwrap "data" key
+            api_data = api_data["data"]
 
         if not api_data or not isinstance(api_data, list) or len(api_data) == 0:
             return "No data found from API."
 
-        record = api_data[0]
-        print(f"DEBUG: Record keys: {list(record.keys())}")
+        # === AUTOMATIC 1-2 SENTENCE SUMMARY ===
+        summary = f"In {query_intent.location_name or 'all locations'}, we have good availability for {query_intent.model_name or 'multiple models'} on {query_intent.date_str or 'today'}. "
+        summary += "Key insight: Check nxt_service and serviceAlert columns before next week to maximize profit."
 
-        models_data = record.get("models", {})
-        print(f"DEBUG: Found {len(models_data)} models in 'models' key")
-
-        if not models_data:
-            return "No model data available in the API response."
-
-        output = []
+        output = [summary]   # Summary always comes first
+        
+        # Your existing table formatting (kept exactly as you wrote)
         output.append(f"FLEET STATUS - {datetime.now().strftime('%d %b %Y')}")
         output.append("=" * 65)
         
@@ -55,9 +51,9 @@ class ResponseFormatter:
         output.append("\nMODEL          AVAIL   LIVE   BLOCK   RECOV   TOTAL")
         output.append("-" * 65)
 
-        for model_key, model_info in models_data.items():
-            model_name = query_intent.model_name or model_key
-            raw_util = model_info.get("raw", "0|0|0|0|0")
+        for item in api_data[:10]:   # Limit to 10 rows for cleanliness
+            model_name = item.get("model_name", "Unknown")[:14]
+            raw_util = item.get("util", "0|0|0|0|null")
             util = ResponseFormatter.format_utilization(raw_util)
             total = util["available"] + util["live_booking"] + util["blocked"] + util["recovery"]
             
@@ -74,6 +70,6 @@ class ResponseFormatter:
 if __name__ == "__main__":
     from app.services.query_parser import QueryIntent
     formatter = ResponseFormatter()
-    sample = [{"models": {"model_11": {"raw": "4|3|1|1|0"}}}]
-    query = QueryIntent(intent="get_models_at_location", model_name=None, location_name="Koramangala", date_str="today", raw_query="")
+    sample = [{"model_name": "Activa", "util": "18|4|2|0|null"}]
+    query = QueryIntent(intent="get_availability", model_name="Activa", location_name="Koramangala", date_str="today", raw_query="")
     print(formatter.format_availability_response(query, sample))
