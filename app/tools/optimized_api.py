@@ -2,59 +2,147 @@ import httpx
 import os
 from typing import List, Dict, Any, Optional
 
-async def call_sir_optimized_api(location: Optional[str] = None, date: Optional[str] = None) -> List[Dict[str, Any]]:
+
+def _safe_api_url(url: Optional[str]) -> Optional[str]:
     """
-    Calls Sir's optimized API (28 columns) - NO API KEY REQUIRED
+    Removes query string from URL before saving logs.
+    This prevents accidentally logging tokens if they are present in URL params.
     """
-    url = os.getenv("SIR_API_URL")
     if not url:
-        print("❌ Missing SIR_API_URL in .env")
-        return []
+        return None
+
+    return url.split("?")[0]
+
+
+async def call_sir_optimized_api_with_metadata(
+    location: Optional[str] = None,
+    date: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Calls Sir's optimized API and returns:
+    - API success/failure
+    - status code
+    - safe API URL
+    - params
+    - raw data
+    - error message if any
+    """
+
+    url = os.getenv("SIR_API_URL")
+    safe_url = _safe_api_url(url)
+
+    print(f"DEBUG: SIR_API_URL from .env = {safe_url}")
 
     params = {}
+
     if location:
         params["location"] = location
+
     if date:
         params["date"] = date
 
-    headers = {"Content-Type": "application/json"}
+    if not url:
+        error_message = "SIR_API_URL is not set in .env file"
+        print(f"❌ ERROR: {error_message}")
+
+        return {
+            "success": False,
+            "api_url": safe_url,
+            "params": params,
+            "status_code": None,
+            "data": [],
+            "error": error_message
+        }
+
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    print(f"DEBUG: Calling Sir API with params: {params}")
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(url, params=params, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            print(f"✅ Sir API success - {len(data) if isinstance(data, list) else 1} records")
-            return data
-    except Exception as e:
-        print(f"❌ Sir API Error: {e}")
-        return []
 
-# TOOL DEFINITION (this is what the agent will use)
+            print(f"DEBUG: Status code = {response.status_code}")
+            print(f"DEBUG: Response text first 300 chars = {response.text[:300]}...")
+
+            response.raise_for_status()
+
+            data = response.json()
+
+            record_count = len(data) if isinstance(data, list) else 1
+            print(f"✅ SUCCESS: Received {record_count} records")
+
+            return {
+                "success": True,
+                "api_url": safe_url,
+                "params": params,
+                "status_code": response.status_code,
+                "data": data,
+                "error": None
+            }
+
+    except httpx.HTTPStatusError as e:
+        error_message = f"HTTP error: {e.response.status_code}"
+
+        try:
+            error_data = e.response.json()
+        except Exception:
+            error_data = e.response.text
+
+        print(f"❌ API HTTP ERROR: {error_message}")
+
+        return {
+            "success": False,
+            "api_url": safe_url,
+            "params": params,
+            "status_code": e.response.status_code,
+            "data": error_data,
+            "error": error_message
+        }
+
+    except Exception as e:
+        error_message = f"{type(e).__name__}: {str(e)}"
+        print(f"❌ API CALL FAILED: {error_message}")
+
+        return {
+            "success": False,
+            "api_url": safe_url,
+            "params": params,
+            "status_code": None,
+            "data": [],
+            "error": error_message
+        }
+
+
+async def call_sir_optimized_api(
+    location: Optional[str] = None,
+    date: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Backward-compatible function.
+    Existing code that expects only API data can still use this.
+    """
+
+    result = await call_sir_optimized_api_with_metadata(
+        location=location,
+        date=date
+    )
+
+    data = result.get("data", [])
+
+    if isinstance(data, list):
+        return data
+
+    return []
+
+
 sir_optimized_api_tool = {
     "name": "sir_optimized_api",
-    "description": (
-        "Use this tool when the user asks about current bike fleet, availability, "
-        "service status, location-wise bikes, bookings, or vehicle health. "
-        "It returns ALL 28 columns: reg_num, bike_type, location_name, Current_km, "
-        "nxt_service, serviceUpdateTime, readingUpdateTime, vehicle_check, forceBlock, "
-        "serviceAlert, last_location_change, last_cmpltd_booking_drop, "
-        "last_ongoing_booking_pickup, booking_status, booking_drop, booking_num, "
-        "chassisNo, engineNo, Insurance, emission, validatedInsurance, "
-        "validatedFitness, validatedPermit, blockReason, firstGPS, firstGpsDate, "
-        "secondGps, secondGpsDate. "
-        "IMPORTANT RULES: "
-        "1. After getting the data, ALWAYS filter to ONLY the columns needed for the question. "
-        "2. NEVER show all 28 columns unless asked. "
-        "3. AFTER filtering the table, ALWAYS write 1-2 short sentences as a SUMMARY at the very top. "
-        "   Example: 'In Koramangala, 18 bikes are available but 7 need service soon. "
-        "   We should move 4 premium models from HSR to balance stock.'"
-    ),
+    "description": "Use this for current fleet, availability, service status etc.",
     "parameters": {
         "type": "object",
-        "properties": {
-            "location": {"type": "string", "description": "Optional: area name like Koramangala"},
-            "date": {"type": "string", "description": "Optional: date in YYYY-MM-DD"}
-        }
+        "properties": {}
     }
 }

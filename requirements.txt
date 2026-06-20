@@ -7,3 +7,5 @@ rapidfuzz
 groq
 openai
 pydantic
+langgraph
+httpx

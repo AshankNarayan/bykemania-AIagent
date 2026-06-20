@@ -1,75 +1,73 @@
-from typing import Dict, Any, List
+from typing import List, Dict, Any
 from datetime import datetime
 
 class ResponseFormatter:
     @staticmethod
-    def format_utilization(util_str: str) -> Dict[str, Any]:
-        """Parse 'available|live_booking|blocked|recovery|null' format"""
-        if not util_str or util_str.lower() == "null":
-            return {"available": 0, "live_booking": 0, "blocked": 0, "recovery": 0, "status": "NA"}
+    def format_availability_response(query_intent: Any, api_data: List[Dict]) -> Dict:
+        """Clean, professional, and dashboard-ready structured JSON"""
         
-        parts = str(util_str).split("|")
-        try:
+        if not api_data or not isinstance(api_data, list):
             return {
-                "available": int(parts[0]) if len(parts) > 0 else 0,
-                "live_booking": int(parts[1]) if len(parts) > 1 else 0,
-                "blocked": int(parts[2]) if len(parts) > 2 else 0,
-                "recovery": int(parts[3]) if len(parts) > 3 else 0,
-                "status": parts[4] if len(parts) > 4 else "NA"
+                "summary": "No data found from API.",
+                "total_records": 0,
+                "filters": {
+                    "location": query_intent.location_name,
+                    "model": query_intent.model_name,
+                    "date": query_intent.date_str
+                },
+                "data": []
             }
-        except:
-            return {"available": 0, "live_booking": 0, "blocked": 0, "recovery": 0, "status": "NA"}
 
-    @staticmethod
-    def format_availability_response(query_intent: Any, api_data: List[Dict]) -> str:
-        """FINAL VERSION with automatic 1-2 sentence summary"""
-        print(f"DEBUG: Received {len(api_data) if isinstance(api_data, list) else 1} records")
-
-        if isinstance(api_data, dict) and "data" in api_data:
-            api_data = api_data["data"]
-
-        if not api_data or not isinstance(api_data, list) or len(api_data) == 0:
-            return "No data found from API."
-
-        # === AUTOMATIC 1-2 SENTENCE SUMMARY ===
-        summary = f"In {query_intent.location_name or 'all locations'}, we have good availability for {query_intent.model_name or 'multiple models'} on {query_intent.date_str or 'today'}. "
-        summary += "Key insight: Check nxt_service and serviceAlert columns before next week to maximize profit."
-
-        output = [summary]   # Summary always comes first
-        
-        # Your existing table formatting (kept exactly as you wrote)
-        output.append(f"FLEET STATUS - {datetime.now().strftime('%d %b %Y')}")
-        output.append("=" * 65)
-        
-        if query_intent.model_name:
-            output.append(f"Model     : {query_intent.model_name}")
+        # Filter data based on query
+        filtered = api_data
         if query_intent.location_name:
-            output.append(f"Location  : {query_intent.location_name}")
-        if query_intent.date_str:
-            output.append(f"Date      : {query_intent.date_str}")
-        
-        output.append("\nMODEL          AVAIL   LIVE   BLOCK   RECOV   TOTAL")
-        output.append("-" * 65)
+            filtered = [item for item in filtered 
+                       if query_intent.location_name.lower() in str(item.get("location_name", "")).lower()]
+        if query_intent.model_name:
+            filtered = [item for item in filtered 
+                       if query_intent.model_name.lower() in str(item.get("bike_type", "")).lower()]
 
-        for item in api_data[:10]:   # Limit to 10 rows for cleanliness
-            model_name = item.get("model_name", "Unknown")[:14]
-            raw_util = item.get("util", "0|0|0|0|null")
-            util = ResponseFormatter.format_utilization(raw_util)
-            total = util["available"] + util["live_booking"] + util["blocked"] + util["recovery"]
-            
-            output.append(
-                f"{model_name:<14} {util['available']:>5}   {util['live_booking']:>4}   "
-                f"{util['blocked']:>5}   {util['recovery']:>5}   {total:>5}"
-            )
+        total = len(filtered)
 
-        output.append("\n✅ Query processed successfully.")
-        return "\n".join(output)
+        # Count useful insights
+        service_alerts = sum(1 for item in filtered if str(item.get("serviceAlert", "")).lower() == "on")
+        blocked = sum(1 for item in filtered if str(item.get("forceBlock", "")).lower() != "off")
 
+        # Meaningful summary
+        summary = f"Found **{total}** bikes"
+        if query_intent.model_name:
+            summary += f" matching **{query_intent.model_name}**"
+        if query_intent.location_name:
+            summary += f" in **{query_intent.location_name}**"
+        summary += "."
+        if service_alerts > 0:
+            summary += f" **{service_alerts}** bikes have service alerts."
+        if blocked > 0:
+            summary += f" **{blocked}** bikes are currently blocked."
+        summary += " Review nxt_service and serviceAlert to plan next week's allocation."
 
-# Quick test
-if __name__ == "__main__":
-    from app.services.query_parser import QueryIntent
-    formatter = ResponseFormatter()
-    sample = [{"model_name": "Activa", "util": "18|4|2|0|null"}]
-    query = QueryIntent(intent="get_availability", model_name="Activa", location_name="Koramangala", date_str="today", raw_query="")
-    print(formatter.format_availability_response(query, sample))
+        # Select only the most useful columns for operations team
+        clean_data = []
+        for item in filtered:
+            clean_data.append({
+                "reg_num": item.get("reg_num"),
+                "bike_type": item.get("bike_type"),
+                "location_name": item.get("location_name"),
+                "Current_km": item.get("Current_km"),
+                "nxt_service": item.get("nxt_service"),
+                "serviceAlert": item.get("serviceAlert"),
+                "forceBlock": item.get("forceBlock"),
+                "booking_status": item.get("booking_status"),
+                "last_ongoing_booking_pickup": item.get("last_ongoing_booking_pickup")
+            })
+
+        return {
+            "summary": summary,
+            "total_records": total,
+            "filters": {
+                "location": query_intent.location_name,
+                "model": query_intent.model_name,
+                "date": query_intent.date_str
+            },
+            "data": clean_data
+        }
