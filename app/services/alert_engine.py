@@ -29,27 +29,32 @@ class AlertEngine:
 
     def _safe_int(self, value: Any) -> Optional[int]:
         """
-        Converts values like '125001' into integer safely.
-        If value is missing or invalid, returns None.
+        Safely converts values like '125001' into int.
+        Returns None if value is missing or invalid.
         """
+
         try:
             if value is None or value == "":
                 return None
+
             return int(float(str(value).strip()))
+
         except Exception:
             return None
 
     def _safe_str(self, value: Any) -> str:
         """
-        Converts any value into clean string.
+        Safely converts any value into a clean string.
         """
+
         if value is None:
             return ""
+
         return str(value).strip()
 
     def _parse_date(self, value: Any) -> Optional[datetime]:
         """
-        Tries to parse different date formats from API.
+        Tries to parse date values from the API.
 
         Supported examples:
         - 2026-11-21
@@ -78,15 +83,17 @@ class AlertEngine:
 
         return None
 
-    def _should_skip_bike(self, bike: Dict[str, Any], include_inactive: bool) -> bool:
+    def _should_skip_bike(
+        self,
+        bike: Dict[str, Any],
+        include_inactive: bool
+    ) -> bool:
         """
         Skips inactive/non-operational records by default.
 
-        Some API records may belong to:
+        Example inactive locations:
         - Sold 998
         - missing 999
-
-        These can create noisy alerts, so we skip them unless include_inactive=True.
         """
 
         if include_inactive:
@@ -112,7 +119,12 @@ class AlertEngine:
     ) -> Dict[str, Any]:
         """
         Creates one standard alert object.
-        This standard shape is useful for dashboard, email, and storage.
+
+        This standard structure is useful for:
+        - API responses
+        - SQLite storage
+        - dashboards
+        - email alerts
         """
 
         return {
@@ -144,23 +156,34 @@ class AlertEngine:
         Generates all alerts internally.
 
         This may generate thousands of alerts.
-        Public methods will summarize or filter the output.
+        Public methods will summarize/filter/limit them.
         """
 
         alerts: List[Dict[str, Any]] = []
         skipped_records = 0
 
         for bike in api_data:
-            if self._should_skip_bike(bike, include_inactive=include_inactive):
+            if self._should_skip_bike(
+                bike=bike,
+                include_inactive=include_inactive
+            ):
                 skipped_records += 1
                 continue
 
             reg_num = self._safe_str(bike.get("reg_num"))
             location = self._safe_str(bike.get("location_name"))
 
-            service_alert = self._safe_str(bike.get("serviceAlert")).lower()
-            force_block = self._safe_str(bike.get("forceBlock")).lower()
-            booking_status = self._safe_str(bike.get("booking_status")).lower()
+            service_alert = self._safe_str(
+                bike.get("serviceAlert")
+            ).lower()
+
+            force_block = self._safe_str(
+                bike.get("forceBlock")
+            ).lower()
+
+            booking_status = self._safe_str(
+                bike.get("booking_status")
+            ).lower()
 
             current_km = self._safe_int(bike.get("Current_km"))
             next_service_km = self._safe_int(bike.get("nxt_service"))
@@ -217,7 +240,8 @@ class AlertEngine:
                             alert_type="SERVICE_OVERDUE_BY_KM",
                             message=(
                                 f"{reg_num} has crossed next service KM. "
-                                f"Current: {current_km}, Next Service: {next_service_km}."
+                                f"Current: {current_km}, "
+                                f"Next Service: {next_service_km}."
                             ),
                             bike=bike,
                             recommendation="Immediately schedule service before further usage."
@@ -230,7 +254,10 @@ class AlertEngine:
                             department="Service Department",
                             severity="medium",
                             alert_type="SERVICE_DUE_SOON_BY_KM",
-                            message=f"{reg_num} is close to service. Only {km_left} km left.",
+                            message=(
+                                f"{reg_num} is close to service. "
+                                f"Only {km_left} km left."
+                            ),
                             bike=bike,
                             recommendation="Plan service soon to avoid downtime."
                         )
@@ -261,7 +288,10 @@ class AlertEngine:
                             department="Compliance Department",
                             severity="critical",
                             alert_type="INSURANCE_EXPIRED",
-                            message=f"{reg_num} insurance expired on {bike.get('Insurance')}.",
+                            message=(
+                                f"{reg_num} insurance expired on "
+                                f"{bike.get('Insurance')}."
+                            ),
                             bike=bike,
                             recommendation="Renew insurance immediately and block vehicle if required."
                         )
@@ -279,7 +309,10 @@ class AlertEngine:
                             department="Compliance Department",
                             severity="critical",
                             alert_type="EMISSION_EXPIRED",
-                            message=f"{reg_num} emission certificate expired on {bike.get('emission')}.",
+                            message=(
+                                f"{reg_num} emission certificate expired on "
+                                f"{bike.get('emission')}."
+                            ),
                             bike=bike,
                             recommendation="Renew emission certificate immediately."
                         )
@@ -304,6 +337,7 @@ class AlertEngine:
 
         if department:
             department_lower = department.strip().lower()
+
             filtered_alerts = [
                 alert for alert in filtered_alerts
                 if alert.get("department", "").lower() == department_lower
@@ -311,6 +345,7 @@ class AlertEngine:
 
         if severity:
             severity_lower = severity.strip().lower()
+
             filtered_alerts = [
                 alert for alert in filtered_alerts
                 if alert.get("severity", "").lower() == severity_lower
@@ -324,7 +359,7 @@ class AlertEngine:
     ) -> List[Dict[str, Any]]:
         """
         Sorts alerts by severity priority:
-        critical first, then high, medium, low.
+        critical → high → medium → low
         """
 
         return sorted(
@@ -335,7 +370,10 @@ class AlertEngine:
             )
         )
 
-    def _build_counts(self, alerts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _build_counts(
+        self,
+        alerts: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
         """
         Builds severity, department, and alert type counts.
         """
@@ -359,8 +397,12 @@ class AlertEngine:
                 severity_count[severity] = 0
 
             severity_count[severity] += 1
-            department_count[department] = department_count.get(department, 0) + 1
-            alert_type_count[alert_type] = alert_type_count.get(alert_type, 0) + 1
+            department_count[department] = (
+                department_count.get(department, 0) + 1
+            )
+            alert_type_count[alert_type] = (
+                alert_type_count.get(alert_type, 0) + 1
+            )
 
         return {
             "severity_count": severity_count,
@@ -380,14 +422,14 @@ class AlertEngine:
         """
         Public function used by FastAPI.
 
-        By default:
-        - returns summary only
-        - does not dump thousands of alerts
-        - skips inactive Sold/Missing records
+        Default:
+        - summary only
+        - no huge alert dump
+        - inactive Sold/Missing records skipped
 
         Optional:
-        - include_details=True returns limited alert details
-        - max_alerts controls how many alerts are returned
+        - include_details=True gives limited alert details
+        - max_alerts controls how many details are returned
         - department filters by department
         - severity filters by severity
         """
@@ -444,6 +486,7 @@ class AlertEngine:
                 f"Showing top {len(response['alerts'])} alerts only. "
                 f"Use max_alerts to change the limit."
             )
+
         else:
             response["alerts"] = []
             response["returned_alert_count"] = 0
@@ -463,13 +506,9 @@ class AlertEngine:
         """
         Generates all filtered alert items for database storage.
 
-        This is separate from generate_alerts() because generate_alerts()
-        returns summary-first output to avoid huge API responses.
-
-        Important:
-        - This returns full filtered alerts.
-        - These alerts are saved in SQLite.
-        - The API response still stays small because /alerts/run returns summary by default.
+        This is separate from generate_alerts() because:
+        - generate_alerts() returns summary-first output
+        - storage needs full filtered alert items
         """
 
         internal_result = self._generate_all_alerts(

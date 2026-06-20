@@ -8,13 +8,14 @@ from app.storage.database import get_connection, init_db
 
 class AlertRepository:
     """
-    Stores alert runs and alert items in SQLite.
+    Stores and retrieves alert runs and alert items in SQLite.
 
-    This makes alerts:
-    - timestamped
-    - dashboard-ready
-    - available for history
-    - usable later for email automation and analytics
+    This supports:
+    - alert history
+    - latest alert run
+    - dashboard summary
+    - department dashboard cards
+    - department-specific dashboard views
     """
 
     def __init__(self):
@@ -22,13 +23,24 @@ class AlertRepository:
 
     @staticmethod
     def _to_json(data: Any) -> str:
+        """
+        Safely converts Python data into JSON string.
+        """
+
         try:
             return json.dumps(data, ensure_ascii=False, default=str)
         except Exception:
-            return json.dumps({"error": "Could not serialize data"}, ensure_ascii=False)
+            return json.dumps(
+                {"error": "Could not serialize data"},
+                ensure_ascii=False
+            )
 
     @staticmethod
     def _from_json(value: Optional[str]) -> Any:
+        """
+        Safely converts JSON string back into Python object.
+        """
+
         if not value:
             return None
 
@@ -203,7 +215,6 @@ class AlertRepository:
     def get_recent_alert_runs(self, limit: int = 10) -> List[Dict[str, Any]]:
         """
         Returns recent alert run summaries.
-        This is useful for dashboard history.
         """
 
         safe_limit = max(1, min(limit, 100))
@@ -235,7 +246,11 @@ class AlertRepository:
     ) -> Optional[Dict[str, Any]]:
         """
         Returns one alert run summary + related alert items.
-        Supports optional filtering by department and severity.
+
+        Supports optional:
+        - department filter
+        - severity filter
+        - limit
         """
 
         safe_limit = max(1, min(limit, 500))
@@ -303,14 +318,10 @@ class AlertRepository:
 
         return run_data
 
-    def get_latest_alert_run(
-        self,
-        limit: int = 100,
-        department: Optional[str] = None,
-        severity: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+    def get_latest_run_id(self) -> Optional[str]:
         """
-        Returns the latest saved alert run.
+        Returns latest alert run_id.
+        Used by dashboard and latest-alert endpoints.
         """
 
         conn = get_connection()
@@ -331,23 +342,299 @@ class AlertRepository:
         if not row:
             return None
 
+        return row["run_id"]
+
+    def get_latest_alert_run(
+        self,
+        limit: int = 100,
+        department: Optional[str] = None,
+        severity: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Returns the latest saved alert run.
+        """
+
+        latest_run_id = self.get_latest_run_id()
+
+        if not latest_run_id:
+            return None
+
         return self.get_alert_run_by_id(
-            run_id=row["run_id"],
+            run_id=latest_run_id,
             limit=limit,
             department=department,
             severity=severity
         )
 
+    def get_dashboard_summary(self) -> Optional[Dict[str, Any]]:
+        """
+        Returns clean summary for dashboard home page.
+
+        This endpoint-friendly response does NOT include individual alert items.
+        """
+
+        recent_runs = self.get_recent_alert_runs(limit=1)
+
+        if not recent_runs:
+            return None
+
+        latest = recent_runs[0]
+
+        return {
+            "run_id": latest.get("run_id"),
+            "generated_at_utc": latest.get("generated_at_utc"),
+            "status": latest.get("status"),
+
+            "records": {
+                "total_records_received": latest.get("total_records_received"),
+                "total_records_checked": latest.get("total_records_checked"),
+                "total_records_skipped": latest.get("total_records_skipped")
+            },
+
+            "alerts": {
+                "total_alerts": latest.get("saved_alert_count"),
+                "critical": latest.get("critical_count"),
+                "high": latest.get("high_count"),
+                "medium": latest.get("medium_count"),
+                "low": latest.get("low_count")
+            },
+
+            "department_count": latest.get("department_count"),
+            "alert_type_count": latest.get("alert_type_count")
+        }
+
+    def get_department_cards(
+        self,
+        run_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Returns department-wise dashboard cards.
+
+        Example:
+        [
+            {
+                "department": "Service Department",
+                "total_alerts": 1684,
+                "critical": 275,
+                "high": 1154,
+                "medium": 255,
+                "low": 0
+            }
+        ]
+        """
+
+        if not run_id:
+            run_id = self.get_latest_run_id()
+
+        if not run_id:
+            return []
+
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                department,
+                COUNT(*) AS total_alerts,
+
+                SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) AS critical,
+                SUM(CASE WHEN severity = 'high' THEN 1 ELSE 0 END) AS high,
+                SUM(CASE WHEN severity = 'medium' THEN 1 ELSE 0 END) AS medium,
+                SUM(CASE WHEN severity = 'low' THEN 1 ELSE 0 END) AS low
+
+            FROM alert_items
+            WHERE run_id = ?
+            GROUP BY department
+            ORDER BY total_alerts DESC
+            """,
+            (run_id,)
+        )
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        cards = []
+
+        for row in rows:
+            cards.append(
+                {
+                    "department": row["department"],
+                    "total_alerts": row["total_alerts"],
+                    "critical": row["critical"] or 0,
+                    "high": row["high"] or 0,
+                    "medium": row["medium"] or 0,
+                    "low": row["low"] or 0
+                }
+            )
+
+        return cards
+
+    def get_department_dashboard(
+        self,
+        department_name: str,
+        run_id: Optional[str] = None,
+        limit: int = 50,
+        severity: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Returns dashboard data for one department.
+
+        Supports:
+        - latest run by default
+        - specific run_id
+        - severity filter
+        - result limit
+        """
+
+        if not run_id:
+            run_id = self.get_latest_run_id()
+
+        if not run_id:
+            return None
+
+        safe_limit = max(1, min(limit, 500))
+
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # Department summary
+        cursor.execute(
+            """
+            SELECT
+                COUNT(*) AS total_alerts,
+
+                SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) AS critical,
+                SUM(CASE WHEN severity = 'high' THEN 1 ELSE 0 END) AS high,
+                SUM(CASE WHEN severity = 'medium' THEN 1 ELSE 0 END) AS medium,
+                SUM(CASE WHEN severity = 'low' THEN 1 ELSE 0 END) AS low
+
+            FROM alert_items
+            WHERE run_id = ?
+            AND LOWER(department) = LOWER(?)
+            """,
+            (run_id, department_name)
+        )
+
+        summary_row = cursor.fetchone()
+
+        if not summary_row or summary_row["total_alerts"] == 0:
+            conn.close()
+
+            return {
+                "run_id": run_id,
+                "department": department_name,
+                "summary": {
+                    "total_alerts": 0,
+                    "critical": 0,
+                    "high": 0,
+                    "medium": 0,
+                    "low": 0
+                },
+                "alert_type_count": {},
+                "items": [],
+                "returned_item_count": 0
+            }
+
+        # Alert type distribution
+        cursor.execute(
+            """
+            SELECT
+                alert_type,
+                COUNT(*) AS count
+            FROM alert_items
+            WHERE run_id = ?
+            AND LOWER(department) = LOWER(?)
+            GROUP BY alert_type
+            ORDER BY count DESC
+            """,
+            (run_id, department_name)
+        )
+
+        alert_type_rows = cursor.fetchall()
+
+        alert_type_count = {
+            row["alert_type"]: row["count"]
+            for row in alert_type_rows
+        }
+
+        # Department alert items
+        query = """
+            SELECT *
+            FROM alert_items
+            WHERE run_id = ?
+            AND LOWER(department) = LOWER(?)
+        """
+
+        params: List[Any] = [run_id, department_name]
+
+        if severity:
+            query += " AND LOWER(severity) = LOWER(?)"
+            params.append(severity)
+
+        query += """
+            ORDER BY
+                CASE severity
+                    WHEN 'critical' THEN 1
+                    WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 3
+                    WHEN 'low' THEN 4
+                    ELSE 5
+                END,
+                id ASC
+            LIMIT ?
+        """
+
+        params.append(safe_limit)
+
+        cursor.execute(query, params)
+        item_rows = cursor.fetchall()
+
+        conn.close()
+
+        items = [self._format_alert_item_row(row) for row in item_rows]
+
+        return {
+            "run_id": run_id,
+            "department": department_name,
+            "filters": {
+                "severity": severity,
+                "limit": safe_limit
+            },
+            "summary": {
+                "total_alerts": summary_row["total_alerts"],
+                "critical": summary_row["critical"] or 0,
+                "high": summary_row["high"] or 0,
+                "medium": summary_row["medium"] or 0,
+                "low": summary_row["low"] or 0
+            },
+            "alert_type_count": alert_type_count,
+            "items": items,
+            "returned_item_count": len(items)
+        }
+
     def _format_alert_run_row(self, row) -> Dict[str, Any]:
+        """
+        Converts alert_runs row into clean dictionary.
+        """
+
         result = dict(row)
 
         result["filters"] = self._from_json(result.pop("filters_json"))
-        result["department_count"] = self._from_json(result.pop("department_count_json"))
-        result["alert_type_count"] = self._from_json(result.pop("alert_type_count_json"))
+        result["department_count"] = self._from_json(
+            result.pop("department_count_json")
+        )
+        result["alert_type_count"] = self._from_json(
+            result.pop("alert_type_count_json")
+        )
 
         return result
 
     def _format_alert_item_row(self, row) -> Dict[str, Any]:
+        """
+        Converts alert_items row into clean dictionary.
+        """
+
         result = dict(row)
 
         result["alert"] = self._from_json(result.pop("alert_json"))

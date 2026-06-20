@@ -56,7 +56,11 @@ async def root():
             "alert_run": "GET /alerts/run",
             "alert_history": "GET /alerts/history",
             "latest_alert_run": "GET /alerts/latest",
-            "alert_run_details": "GET /alerts/history/{run_id}"
+            "alert_run_details": "GET /alerts/history/{run_id}",
+
+            "dashboard_summary": "GET /dashboard/summary",
+            "dashboard_departments": "GET /dashboard/departments",
+            "dashboard_department_detail": "GET /dashboard/department/{department_name}"
         }
     }
 
@@ -249,6 +253,84 @@ async def get_alert_run_details(
     return {
         "status": "success",
         "alert_run": alert_run
+    }
+
+
+@app.get("/dashboard/summary")
+async def dashboard_summary():
+    """
+    Dashboard home summary.
+
+    This endpoint is frontend-friendly.
+    It gives only summary data from the latest alert run.
+    """
+
+    summary = alert_repo.get_dashboard_summary()
+
+    if not summary:
+        raise HTTPException(
+            status_code=404,
+            detail="No alert history found. Run /alerts/run first."
+        )
+
+    return {
+        "status": "success",
+        "dashboard": summary
+    }
+
+
+@app.get("/dashboard/departments")
+async def dashboard_departments(run_id: Optional[str] = None):
+    """
+    Returns department-wise alert cards.
+
+    Useful for dashboard home page:
+    - Service Department card
+    - Fleet Department card
+    - Compliance Department card
+    - Recovery Department card
+    """
+
+    cards = alert_repo.get_department_cards(run_id=run_id)
+
+    return {
+        "status": "success",
+        "total_departments": len(cards),
+        "departments": cards
+    }
+
+
+@app.get("/dashboard/department/{department_name}")
+async def dashboard_department_detail(
+    department_name: str,
+    run_id: Optional[str] = None,
+    limit: int = 50,
+    severity: Optional[str] = None
+):
+    """
+    Returns department-specific dashboard data.
+
+    Example:
+    /dashboard/department/Service%20Department?limit=20
+    /dashboard/department/Compliance%20Department?severity=critical&limit=20
+    """
+
+    data = alert_repo.get_department_dashboard(
+        department_name=department_name,
+        run_id=run_id,
+        limit=limit,
+        severity=severity
+    )
+
+    if not data:
+        raise HTTPException(
+            status_code=404,
+            detail="No alert history found. Run /alerts/run first."
+        )
+
+    return {
+        "status": "success",
+        "dashboard": data
     }
 
 
