@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -10,12 +10,13 @@ class AlertRepository:
     """
     Stores and retrieves alert runs and alert items in SQLite.
 
-    This supports:
+    Supports:
     - alert history
     - latest alert run
     - dashboard summary
     - department dashboard cards
     - department-specific dashboard views
+    - cooldown checks to prevent duplicate/frequent alert runs
     """
 
     def __init__(self):
@@ -23,10 +24,6 @@ class AlertRepository:
 
     @staticmethod
     def _to_json(data: Any) -> str:
-        """
-        Safely converts Python data into JSON string.
-        """
-
         try:
             return json.dumps(data, ensure_ascii=False, default=str)
         except Exception:
@@ -37,10 +34,6 @@ class AlertRepository:
 
     @staticmethod
     def _from_json(value: Optional[str]) -> Any:
-        """
-        Safely converts JSON string back into Python object.
-        """
-
         if not value:
             return None
 
@@ -48,6 +41,27 @@ class AlertRepository:
             return json.loads(value)
         except Exception:
             return value
+
+    @staticmethod
+    def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+        """
+        Parses ISO datetime string safely.
+        Handles timezone-aware and naive datetime values.
+        """
+
+        if not value:
+            return None
+
+        try:
+            parsed = datetime.fromisoformat(value)
+
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+
+            return parsed.astimezone(timezone.utc)
+
+        except Exception:
+            return None
 
     def save_alert_run_with_items(
         self,
@@ -321,7 +335,6 @@ class AlertRepository:
     def get_latest_run_id(self) -> Optional[str]:
         """
         Returns latest alert run_id.
-        Used by dashboard and latest-alert endpoints.
         """
 
         conn = get_connection()
@@ -343,6 +356,81 @@ class AlertRepository:
             return None
 
         return row["run_id"]
+
+    def check_recent_alert_run(
+        self,
+        cooldown_minutes: int = 30
+    ) -> Dict[str, Any]:
+        """
+        Checks whether a recent alert run already exists.
+
+        If the latest alert run happened within cooldown_minutes,
+        a new run should be skipped unless force=true.
+        """
+
+        if cooldown_minutes <= 0:
+            return {
+                "should_skip": False,
+                "reason": "Cooldown disabled.",
+                "cooldown_minutes": cooldown_minutes,
+                "latest_run_id": None,
+                "latest_generated_at_utc": None,
+                "minutes_since_last_run": None,
+                "next_allowed_at_utc": None
+            }
+
+        recent_runs = self.get_recent_alert_runs(limit=1)
+
+        if not recent_runs:
+            return {
+                "should_skip": False,
+                "reason": "No previous alert run found.",
+                "cooldown_minutes": cooldown_minutes,
+                "latest_run_id": None,
+                "latest_generated_at_utc": None,
+                "minutes_since_last_run": None,
+                "next_allowed_at_utc": None
+            }
+
+        latest = recent_runs[0]
+
+        latest_generated_at = self._parse_iso_datetime(
+            latest.get("generated_at_utc")
+        )
+
+        if not latest_generated_at:
+            return {
+                "should_skip": False,
+                "reason": "Could not parse latest alert run timestamp.",
+                "cooldown_minutes": cooldown_minutes,
+                "latest_run_id": latest.get("run_id"),
+                "latest_generated_at_utc": latest.get("generated_at_utc"),
+                "minutes_since_last_run": None,
+                "next_allowed_at_utc": None
+            }
+
+        now = datetime.now(timezone.utc)
+        elapsed = now - latest_generated_at
+        cooldown = timedelta(minutes=cooldown_minutes)
+
+        minutes_since_last_run = round(elapsed.total_seconds() / 60, 2)
+        next_allowed_at = latest_generated_at + cooldown
+
+        should_skip = elapsed < cooldown
+
+        return {
+            "should_skip": should_skip,
+            "reason": (
+                "Latest alert run is still inside cooldown window."
+                if should_skip
+                else "Cooldown window has passed."
+            ),
+            "cooldown_minutes": cooldown_minutes,
+            "latest_run_id": latest.get("run_id"),
+            "latest_generated_at_utc": latest.get("generated_at_utc"),
+            "minutes_since_last_run": minutes_since_last_run,
+            "next_allowed_at_utc": next_allowed_at.isoformat()
+        }
 
     def get_latest_alert_run(
         self,
@@ -369,8 +457,7 @@ class AlertRepository:
     def get_dashboard_summary(self) -> Optional[Dict[str, Any]]:
         """
         Returns clean summary for dashboard home page.
-
-        This endpoint-friendly response does NOT include individual alert items.
+        Does not include individual alert items.
         """
 
         recent_runs = self.get_recent_alert_runs(limit=1)
@@ -409,18 +496,6 @@ class AlertRepository:
     ) -> List[Dict[str, Any]]:
         """
         Returns department-wise dashboard cards.
-
-        Example:
-        [
-            {
-                "department": "Service Department",
-                "total_alerts": 1684,
-                "critical": 275,
-                "high": 1154,
-                "medium": 255,
-                "low": 0
-            }
-        ]
         """
 
         if not run_id:
@@ -479,12 +554,6 @@ class AlertRepository:
     ) -> Optional[Dict[str, Any]]:
         """
         Returns dashboard data for one department.
-
-        Supports:
-        - latest run by default
-        - specific run_id
-        - severity filter
-        - result limit
         """
 
         if not run_id:
@@ -498,7 +567,6 @@ class AlertRepository:
         conn = get_connection()
         cursor = conn.cursor()
 
-        # Department summary
         cursor.execute(
             """
             SELECT
@@ -536,7 +604,6 @@ class AlertRepository:
                 "returned_item_count": 0
             }
 
-        # Alert type distribution
         cursor.execute(
             """
             SELECT
@@ -558,7 +625,6 @@ class AlertRepository:
             for row in alert_type_rows
         }
 
-        # Department alert items
         query = """
             SELECT *
             FROM alert_items
@@ -614,10 +680,6 @@ class AlertRepository:
         }
 
     def _format_alert_run_row(self, row) -> Dict[str, Any]:
-        """
-        Converts alert_runs row into clean dictionary.
-        """
-
         result = dict(row)
 
         result["filters"] = self._from_json(result.pop("filters_json"))
@@ -631,10 +693,6 @@ class AlertRepository:
         return result
 
     def _format_alert_item_row(self, row) -> Dict[str, Any]:
-        """
-        Converts alert_items row into clean dictionary.
-        """
-
         result = dict(row)
 
         result["alert"] = self._from_json(result.pop("alert_json"))

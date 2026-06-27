@@ -1,3 +1,4 @@
+import os
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -14,6 +15,7 @@ from app.storage.log_repository import AgentLogRepository
 from app.storage.alert_repository import AlertRepository
 from app.tools.optimized_api import call_sir_optimized_api_with_metadata
 from app.services.alert_engine import AlertEngine
+from app.services.scheduler_service import SchedulerService
 
 
 app = FastAPI(
@@ -36,10 +38,49 @@ agent = BykeManiaAgent()
 log_repo = AgentLogRepository()
 alert_engine = AlertEngine()
 alert_repo = AlertRepository()
+scheduler_service = SchedulerService(
+    alert_engine=alert_engine,
+    alert_repo=alert_repo
+)
 
 
 class ChatRequest(BaseModel):
     query: str
+
+
+def get_alert_run_cooldown_minutes() -> int:
+    """
+    Reads cooldown value from .env.
+
+    If ALERT_RUN_COOLDOWN_MINUTES=30,
+    then the system avoids saving another alert run within 30 minutes
+    unless force=true.
+    """
+
+    try:
+        return max(0, int(os.getenv("ALERT_RUN_COOLDOWN_MINUTES", "30")))
+    except Exception:
+        return 30
+
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Starts scheduler when FastAPI starts, only if enabled in .env.
+    """
+
+    scheduler_status = scheduler_service.start()
+    print("[Scheduler Startup]", scheduler_status)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """
+    Stops scheduler when FastAPI shuts down.
+    """
+
+    scheduler_status = scheduler_service.shutdown()
+    print("[Scheduler Shutdown]", scheduler_status)
 
 
 @app.get("/")
@@ -54,13 +95,18 @@ async def root():
             "full_log": "GET /logs/{request_id}",
 
             "alert_run": "GET /alerts/run",
+            "alert_run_force": "GET /alerts/run?force=true",
             "alert_history": "GET /alerts/history",
             "latest_alert_run": "GET /alerts/latest",
             "alert_run_details": "GET /alerts/history/{run_id}",
 
             "dashboard_summary": "GET /dashboard/summary",
             "dashboard_departments": "GET /dashboard/departments",
-            "dashboard_department_detail": "GET /dashboard/department/{department_name}"
+            "dashboard_department_detail": "GET /dashboard/department/{department_name}",
+
+            "scheduler_status": "GET /scheduler/status",
+            "scheduler_run_now": "POST /scheduler/run-now",
+            "scheduler_run_now_force": "POST /scheduler/run-now?force=true"
         }
     }
 
@@ -93,24 +139,35 @@ async def run_alert_check(
     max_alerts: int = 20,
     department: Optional[str] = None,
     severity: Optional[str] = None,
-    include_inactive: bool = False
+    include_inactive: bool = False,
+    force: bool = False
 ):
     """
     Runs alert checking on current fleet data and saves the alert run.
 
-    Default behavior:
-    - returns summary only
-    - avoids huge output
-    - skips inactive Sold/Missing records
-    - saves full filtered alert items in SQLite
+    Cooldown protection:
+    - prevents duplicate/frequent alert runs
+    - use force=true to bypass cooldown
 
-    Optional query parameters:
-    - include_details=true
-    - max_alerts=20
-    - department=Fleet Department
-    - severity=critical
-    - include_inactive=true
+    Examples:
+    /alerts/run
+    /alerts/run?force=true
+    /alerts/run?include_details=true&max_alerts=20
     """
+
+    cooldown_minutes = get_alert_run_cooldown_minutes()
+
+    cooldown_check = alert_repo.check_recent_alert_run(
+        cooldown_minutes=cooldown_minutes
+    )
+
+    if cooldown_check.get("should_skip") and not force:
+        return {
+            "status": "skipped",
+            "message": "Recent alert run already exists. Skipping to prevent duplicate/frequent runs.",
+            "force": force,
+            "cooldown": cooldown_check
+        }
 
     api_result = await call_sir_optimized_api_with_metadata()
 
@@ -131,7 +188,6 @@ async def run_alert_check(
             "data_type": str(type(api_data))
         }
 
-    # Summary-first response for API/dashboard
     alert_result = alert_engine.generate_alerts(
         api_data=api_data,
         include_details=include_details,
@@ -141,7 +197,6 @@ async def run_alert_check(
         include_inactive=include_inactive
     )
 
-    # Full filtered alert items for persistent storage
     alerts_to_save = alert_engine.generate_alert_items_for_storage(
         api_data=api_data,
         department=department,
@@ -160,6 +215,7 @@ async def run_alert_check(
     return {
         "status": "success",
         "message": "Alert check completed and saved successfully.",
+        "force": force,
         "run_id": run_id,
         "result": alert_result
     }
@@ -169,12 +225,6 @@ async def run_alert_check(
 async def get_alert_history(limit: int = 10):
     """
     Returns recent alert scan history.
-
-    This is useful for dashboard history:
-    - when alert scans happened
-    - how many alerts were found
-    - severity counts
-    - department counts
     """
 
     safe_limit = max(1, min(limit, 100))
@@ -196,11 +246,6 @@ async def get_latest_alert_run(
 ):
     """
     Returns the latest saved alert run with limited alert items.
-
-    Optional filters:
-    - department=Fleet Department
-    - severity=critical
-    - limit=100
     """
 
     latest = alert_repo.get_latest_alert_run(
@@ -230,11 +275,6 @@ async def get_alert_run_details(
 ):
     """
     Returns one saved alert run with limited alert items.
-
-    Optional filters:
-    - department=Fleet Department
-    - severity=critical
-    - limit=100
     """
 
     alert_run = alert_repo.get_alert_run_by_id(
@@ -260,9 +300,6 @@ async def get_alert_run_details(
 async def dashboard_summary():
     """
     Dashboard home summary.
-
-    This endpoint is frontend-friendly.
-    It gives only summary data from the latest alert run.
     """
 
     summary = alert_repo.get_dashboard_summary()
@@ -283,12 +320,6 @@ async def dashboard_summary():
 async def dashboard_departments(run_id: Optional[str] = None):
     """
     Returns department-wise alert cards.
-
-    Useful for dashboard home page:
-    - Service Department card
-    - Fleet Department card
-    - Compliance Department card
-    - Recovery Department card
     """
 
     cards = alert_repo.get_department_cards(run_id=run_id)
@@ -309,10 +340,6 @@ async def dashboard_department_detail(
 ):
     """
     Returns department-specific dashboard data.
-
-    Example:
-    /dashboard/department/Service%20Department?limit=20
-    /dashboard/department/Compliance%20Department?severity=critical&limit=20
     """
 
     data = alert_repo.get_department_dashboard(
@@ -332,6 +359,36 @@ async def dashboard_department_detail(
         "status": "success",
         "dashboard": data
     }
+
+
+@app.get("/scheduler/status")
+async def scheduler_status():
+    """
+    Returns scheduler status.
+    """
+
+    return {
+        "status": "success",
+        "scheduler": scheduler_service.get_status()
+    }
+
+
+@app.post("/scheduler/run-now")
+async def scheduler_run_now(force: bool = False):
+    """
+    Manually triggers the same alert check used by the scheduler.
+
+    Cooldown protection:
+    - by default it skips if a recent run already exists
+    - use force=true to bypass cooldown
+    """
+
+    result = await scheduler_service.run_alert_check_now(
+        triggered_by="manual_endpoint",
+        force=force
+    )
+
+    return result
 
 
 @app.get("/logs/recent")
