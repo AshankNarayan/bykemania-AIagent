@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -16,6 +16,7 @@ from app.storage.alert_repository import AlertRepository
 from app.tools.optimized_api import call_sir_optimized_api_with_metadata
 from app.services.alert_engine import AlertEngine
 from app.services.scheduler_service import SchedulerService
+from app.security.api_key import verify_api_key
 
 
 app = FastAPI(
@@ -85,10 +86,19 @@ async def shutdown_event():
 
 @app.get("/")
 async def root():
+    """
+    Public health endpoint.
+
+    This endpoint is intentionally not API-key protected.
+    """
+
     return {
         "message": "BykeMania AI Agent is running 🚀",
         "status": "healthy",
         "version": "0.1.0",
+        "security": {
+            "protected_endpoints_require": "x-api-key header"
+        },
         "available_endpoints": {
             "chat": "POST /chat",
             "recent_logs": "GET /logs/recent",
@@ -111,10 +121,15 @@ async def root():
     }
 
 
-@app.post("/chat")
+@app.post(
+    "/chat",
+    dependencies=[Depends(verify_api_key)]
+)
 async def chat(request: ChatRequest):
     """
     Main chat endpoint.
+
+    Protected by x-api-key.
 
     Flow:
     1. User sends natural language query
@@ -133,7 +148,10 @@ async def chat(request: ChatRequest):
     }
 
 
-@app.get("/alerts/run")
+@app.get(
+    "/alerts/run",
+    dependencies=[Depends(verify_api_key)]
+)
 async def run_alert_check(
     include_details: bool = False,
     max_alerts: int = 20,
@@ -144,6 +162,8 @@ async def run_alert_check(
 ):
     """
     Runs alert checking on current fleet data and saves the alert run.
+
+    Protected by x-api-key.
 
     Cooldown protection:
     - prevents duplicate/frequent alert runs
@@ -221,10 +241,15 @@ async def run_alert_check(
     }
 
 
-@app.get("/alerts/history")
+@app.get(
+    "/alerts/history",
+    dependencies=[Depends(verify_api_key)]
+)
 async def get_alert_history(limit: int = 10):
     """
     Returns recent alert scan history.
+
+    Protected by x-api-key.
     """
 
     safe_limit = max(1, min(limit, 100))
@@ -238,7 +263,10 @@ async def get_alert_history(limit: int = 10):
     }
 
 
-@app.get("/alerts/latest")
+@app.get(
+    "/alerts/latest",
+    dependencies=[Depends(verify_api_key)]
+)
 async def get_latest_alert_run(
     limit: int = 100,
     department: Optional[str] = None,
@@ -246,6 +274,8 @@ async def get_latest_alert_run(
 ):
     """
     Returns the latest saved alert run with limited alert items.
+
+    Protected by x-api-key.
     """
 
     latest = alert_repo.get_latest_alert_run(
@@ -266,7 +296,10 @@ async def get_latest_alert_run(
     }
 
 
-@app.get("/alerts/history/{run_id}")
+@app.get(
+    "/alerts/history/{run_id}",
+    dependencies=[Depends(verify_api_key)]
+)
 async def get_alert_run_details(
     run_id: str,
     limit: int = 100,
@@ -275,6 +308,8 @@ async def get_alert_run_details(
 ):
     """
     Returns one saved alert run with limited alert items.
+
+    Protected by x-api-key.
     """
 
     alert_run = alert_repo.get_alert_run_by_id(
@@ -296,10 +331,15 @@ async def get_alert_run_details(
     }
 
 
-@app.get("/dashboard/summary")
+@app.get(
+    "/dashboard/summary",
+    dependencies=[Depends(verify_api_key)]
+)
 async def dashboard_summary():
     """
     Dashboard home summary.
+
+    Protected by x-api-key.
     """
 
     summary = alert_repo.get_dashboard_summary()
@@ -316,10 +356,15 @@ async def dashboard_summary():
     }
 
 
-@app.get("/dashboard/departments")
+@app.get(
+    "/dashboard/departments",
+    dependencies=[Depends(verify_api_key)]
+)
 async def dashboard_departments(run_id: Optional[str] = None):
     """
     Returns department-wise alert cards.
+
+    Protected by x-api-key.
     """
 
     cards = alert_repo.get_department_cards(run_id=run_id)
@@ -331,7 +376,10 @@ async def dashboard_departments(run_id: Optional[str] = None):
     }
 
 
-@app.get("/dashboard/department/{department_name}")
+@app.get(
+    "/dashboard/department/{department_name}",
+    dependencies=[Depends(verify_api_key)]
+)
 async def dashboard_department_detail(
     department_name: str,
     run_id: Optional[str] = None,
@@ -340,6 +388,8 @@ async def dashboard_department_detail(
 ):
     """
     Returns department-specific dashboard data.
+
+    Protected by x-api-key.
     """
 
     data = alert_repo.get_department_dashboard(
@@ -361,10 +411,15 @@ async def dashboard_department_detail(
     }
 
 
-@app.get("/scheduler/status")
+@app.get(
+    "/scheduler/status",
+    dependencies=[Depends(verify_api_key)]
+)
 async def scheduler_status():
     """
     Returns scheduler status.
+
+    Protected by x-api-key.
     """
 
     return {
@@ -373,10 +428,15 @@ async def scheduler_status():
     }
 
 
-@app.post("/scheduler/run-now")
+@app.post(
+    "/scheduler/run-now",
+    dependencies=[Depends(verify_api_key)]
+)
 async def scheduler_run_now(force: bool = False):
     """
     Manually triggers the same alert check used by the scheduler.
+
+    Protected by x-api-key.
 
     Cooldown protection:
     - by default it skips if a recent run already exists
@@ -391,10 +451,15 @@ async def scheduler_run_now(force: bool = False):
     return result
 
 
-@app.get("/logs/recent")
+@app.get(
+    "/logs/recent",
+    dependencies=[Depends(verify_api_key)]
+)
 async def get_recent_logs(limit: int = 10):
     """
     Returns recent query logs.
+
+    Protected by x-api-key.
     """
 
     safe_limit = max(1, min(limit, 50))
@@ -407,10 +472,15 @@ async def get_recent_logs(limit: int = 10):
     }
 
 
-@app.get("/logs/{request_id}")
+@app.get(
+    "/logs/{request_id}",
+    dependencies=[Depends(verify_api_key)]
+)
 async def get_log_by_request_id(request_id: str):
     """
     Returns full details of one logged query.
+
+    Protected by x-api-key.
     """
 
     log = log_repo.get_log_by_request_id(request_id)
