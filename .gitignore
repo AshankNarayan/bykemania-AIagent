@@ -4,7 +4,7 @@ venv/
 
 # Environment files
 .env
-.env.*
+
 
 # Python cache
 __pycache__/
@@ -37,3 +37,10 @@ tmp/
 # Secrets
 secrets.json
 credentials.json
+
+.env
+venv/
+.venv/
+__pycache__/
+*.pyc
+app/storage/*.sqlite3

@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: bykemania-agent-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+
+      - key: GROQ_API_KEY
+        sync: false
+
+      - key: APP_API_KEY
+        sync: false
+
+      - key: SIR_API_URL
+        sync: false
+
+      - key: DATABASE_URL
+        value: sqlite:///app/storage/agent_logs.sqlite3
+
+      - key: ALERT_SCHEDULER_ENABLED
+        value: false
+
+      - key: ALERT_SCHEDULER_INTERVAL_MINUTES
+        value: 120
+
+      - key: ALERT_SCHEDULER_RUN_ON_STARTUP
+        value: false
+
+      - key: ALERT_RUN_COOLDOWN_MINUTES
+        value: 60
+
+ENVIRONMENT=production
+GROQ_API_KEY=your_real_groq_key
+APP_API_KEY=your_generated_backend_api_key
+SIR_API_URL=your_private_backend_api_url
+DATABASE_URL=sqlite:///app/storage/agent_logs.sqlite3
+ALERT_SCHEDULER_ENABLED=false
+ALERT_SCHEDULER_INTERVAL_MINUTES=120
+ALERT_SCHEDULER_RUN_ON_STARTUP=false
+ALERT_RUN_COOLDOWN_MINUTES=60

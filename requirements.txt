@@ -9,3 +9,4 @@ openai
 pydantic
 langgraph
 httpx
+apscheduler
