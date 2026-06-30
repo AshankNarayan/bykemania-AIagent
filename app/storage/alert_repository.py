@@ -3,12 +3,21 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from app.storage.database import get_connection, init_db
+from app.storage.database import (
+    execute_many,
+    execute_query,
+    get_connection,
+    init_db
+)
 
 
 class AlertRepository:
     """
-    Stores and retrieves alert runs and alert items in SQLite.
+    Stores and retrieves alert runs and alert items.
+
+    Compatible with:
+    - SQLite
+    - PostgreSQL
 
     Supports:
     - alert history
@@ -41,6 +50,20 @@ class AlertRepository:
             return json.loads(value)
         except Exception:
             return value
+
+    @staticmethod
+    def _row_to_dict(row: Any) -> Dict[str, Any]:
+        """
+        Converts SQLite Row or PostgreSQL dict row into normal dict.
+        """
+
+        if row is None:
+            return {}
+
+        if isinstance(row, dict):
+            return row
+
+        return dict(row)
 
     @staticmethod
     def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -94,7 +117,8 @@ class AlertRepository:
         cursor = conn.cursor()
 
         try:
-            cursor.execute(
+            execute_query(
+                cursor,
                 """
                 INSERT INTO alert_runs (
                     run_id,
@@ -182,7 +206,8 @@ class AlertRepository:
                     )
                 )
 
-            cursor.executemany(
+            execute_many(
+                cursor,
                 """
                 INSERT INTO alert_items (
                     run_id,
@@ -236,7 +261,8 @@ class AlertRepository:
         conn = get_connection()
         cursor = conn.cursor()
 
-        cursor.execute(
+        execute_query(
+            cursor,
             """
             SELECT *
             FROM alert_runs
@@ -272,7 +298,8 @@ class AlertRepository:
         conn = get_connection()
         cursor = conn.cursor()
 
-        cursor.execute(
+        execute_query(
+            cursor,
             """
             SELECT *
             FROM alert_runs
@@ -318,7 +345,7 @@ class AlertRepository:
 
         params.append(safe_limit)
 
-        cursor.execute(query, params)
+        execute_query(cursor, query, params)
         item_rows = cursor.fetchall()
 
         conn.close()
@@ -340,7 +367,8 @@ class AlertRepository:
         conn = get_connection()
         cursor = conn.cursor()
 
-        cursor.execute(
+        execute_query(
+            cursor,
             """
             SELECT run_id
             FROM alert_runs
@@ -355,7 +383,9 @@ class AlertRepository:
         if not row:
             return None
 
-        return row["run_id"]
+        row_dict = self._row_to_dict(row)
+
+        return row_dict["run_id"]
 
     def check_recent_alert_run(
         self,
@@ -507,7 +537,8 @@ class AlertRepository:
         conn = get_connection()
         cursor = conn.cursor()
 
-        cursor.execute(
+        execute_query(
+            cursor,
             """
             SELECT
                 department,
@@ -532,14 +563,16 @@ class AlertRepository:
         cards = []
 
         for row in rows:
+            row_dict = self._row_to_dict(row)
+
             cards.append(
                 {
-                    "department": row["department"],
-                    "total_alerts": row["total_alerts"],
-                    "critical": row["critical"] or 0,
-                    "high": row["high"] or 0,
-                    "medium": row["medium"] or 0,
-                    "low": row["low"] or 0
+                    "department": row_dict.get("department"),
+                    "total_alerts": row_dict.get("total_alerts"),
+                    "critical": row_dict.get("critical") or 0,
+                    "high": row_dict.get("high") or 0,
+                    "medium": row_dict.get("medium") or 0,
+                    "low": row_dict.get("low") or 0
                 }
             )
 
@@ -567,7 +600,8 @@ class AlertRepository:
         conn = get_connection()
         cursor = conn.cursor()
 
-        cursor.execute(
+        execute_query(
+            cursor,
             """
             SELECT
                 COUNT(*) AS total_alerts,
@@ -586,7 +620,13 @@ class AlertRepository:
 
         summary_row = cursor.fetchone()
 
-        if not summary_row or summary_row["total_alerts"] == 0:
+        if not summary_row:
+            conn.close()
+            return None
+
+        summary_dict = self._row_to_dict(summary_row)
+
+        if not summary_dict.get("total_alerts"):
             conn.close()
 
             return {
@@ -604,7 +644,8 @@ class AlertRepository:
                 "returned_item_count": 0
             }
 
-        cursor.execute(
+        execute_query(
+            cursor,
             """
             SELECT
                 alert_type,
@@ -620,10 +661,11 @@ class AlertRepository:
 
         alert_type_rows = cursor.fetchall()
 
-        alert_type_count = {
-            row["alert_type"]: row["count"]
-            for row in alert_type_rows
-        }
+        alert_type_count = {}
+
+        for row in alert_type_rows:
+            row_dict = self._row_to_dict(row)
+            alert_type_count[row_dict.get("alert_type")] = row_dict.get("count")
 
         query = """
             SELECT *
@@ -653,7 +695,7 @@ class AlertRepository:
 
         params.append(safe_limit)
 
-        cursor.execute(query, params)
+        execute_query(cursor, query, params)
         item_rows = cursor.fetchall()
 
         conn.close()
@@ -668,33 +710,33 @@ class AlertRepository:
                 "limit": safe_limit
             },
             "summary": {
-                "total_alerts": summary_row["total_alerts"],
-                "critical": summary_row["critical"] or 0,
-                "high": summary_row["high"] or 0,
-                "medium": summary_row["medium"] or 0,
-                "low": summary_row["low"] or 0
+                "total_alerts": summary_dict.get("total_alerts"),
+                "critical": summary_dict.get("critical") or 0,
+                "high": summary_dict.get("high") or 0,
+                "medium": summary_dict.get("medium") or 0,
+                "low": summary_dict.get("low") or 0
             },
             "alert_type_count": alert_type_count,
             "items": items,
             "returned_item_count": len(items)
         }
 
-    def _format_alert_run_row(self, row) -> Dict[str, Any]:
-        result = dict(row)
+    def _format_alert_run_row(self, row: Any) -> Dict[str, Any]:
+        result = self._row_to_dict(row)
 
-        result["filters"] = self._from_json(result.pop("filters_json"))
+        result["filters"] = self._from_json(result.pop("filters_json", None))
         result["department_count"] = self._from_json(
-            result.pop("department_count_json")
+            result.pop("department_count_json", None)
         )
         result["alert_type_count"] = self._from_json(
-            result.pop("alert_type_count_json")
+            result.pop("alert_type_count_json", None)
         )
 
         return result
 
-    def _format_alert_item_row(self, row) -> Dict[str, Any]:
-        result = dict(row)
+    def _format_alert_item_row(self, row: Any) -> Dict[str, Any]:
+        result = self._row_to_dict(row)
 
-        result["alert"] = self._from_json(result.pop("alert_json"))
+        result["alert"] = self._from_json(result.pop("alert_json", None))
 
         return result

@@ -15,9 +15,9 @@ DEFAULT_SQLITE_PATH = PROJECT_ROOT / "app" / "storage" / "agent_logs.sqlite3"
 
 def get_database_type() -> str:
     """
-    Returns the selected database type.
+    Returns selected database type.
 
-    Local MVP:
+    Local:
     DATABASE_TYPE=sqlite
 
     Future cloud:
@@ -30,13 +30,6 @@ def get_database_type() -> str:
 def get_database_url() -> str:
     """
     Returns DATABASE_URL from .env.
-
-    SQLite examples:
-    DATABASE_URL=sqlite:///app/storage/agent_logs.sqlite3
-    DATABASE_URL=app/storage/agent_logs.sqlite3
-
-    PostgreSQL example:
-    DATABASE_URL=postgresql://username:password@host:5432/database_name
     """
 
     return os.getenv(
@@ -82,13 +75,7 @@ def _resolve_sqlite_path(database_url: Optional[str] = None) -> Path:
 
 def get_connection():
     """
-    Returns a database connection.
-
-    Current local default:
-    - SQLite connection
-
-    Future cloud:
-    - PostgreSQL connection using psycopg
+    Returns database connection.
     """
 
     if is_postgres():
@@ -110,11 +97,7 @@ def _get_postgres_connection():
     """
     PostgreSQL connection.
 
-    This is prepared for the next migration step.
-
-    Important:
-    Repository queries still need placeholder compatibility updates
-    before switching DATABASE_TYPE=postgres.
+    Repository queries are being prepared for PostgreSQL compatibility.
     """
 
     try:
@@ -141,14 +124,11 @@ def normalize_query_for_database(query: str) -> str:
     """
     Converts SQLite-style placeholders to PostgreSQL placeholders.
 
-    SQLite uses:
+    SQLite:
     ?
 
-    PostgreSQL psycopg uses:
+    PostgreSQL psycopg:
     %s
-
-    Existing repositories currently use '?'.
-    In the next step, repositories will call this helper before execution.
     """
 
     if is_postgres():
@@ -182,11 +162,11 @@ def execute_many(cursor: Any, query: str, params_list: Any):
 
 def init_db():
     """
-    Initializes database tables.
+    Initializes database tables and applies lightweight migrations.
 
-    Works for:
-    - SQLite now
-    - PostgreSQL in the next step after repository compatibility updates
+    Important:
+    CREATE TABLE IF NOT EXISTS does not update old tables.
+    So we also run migration helpers to add missing columns.
     """
 
     if is_postgres():
@@ -288,6 +268,162 @@ def _init_sqlite_db():
         """
     )
 
+    _migrate_sqlite_agent_logs(cursor)
+    _migrate_sqlite_alert_runs(cursor)
+    _migrate_sqlite_alert_items(cursor)
+    _create_sqlite_indexes(cursor)
+
+    conn.commit()
+    conn.close()
+
+
+def _get_sqlite_columns(cursor, table_name: str):
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    rows = cursor.fetchall()
+
+    return {
+        row["name"] if isinstance(row, sqlite3.Row) else row[1]
+        for row in rows
+    }
+
+
+def _add_sqlite_column_if_missing(
+    cursor,
+    table_name: str,
+    column_name: str,
+    column_definition: str
+):
+    existing_columns = _get_sqlite_columns(cursor, table_name)
+
+    if column_name not in existing_columns:
+        cursor.execute(
+            f"""
+            ALTER TABLE {table_name}
+            ADD COLUMN {column_name} {column_definition}
+            """
+        )
+
+
+def _migrate_sqlite_agent_logs(cursor):
+    """
+    Adds missing columns to old agent_logs tables.
+
+    This fixes errors like:
+    table agent_logs has no column named api_response_json
+    """
+
+    required_columns = {
+        "request_id": "TEXT UNIQUE",
+        "timestamp_utc": "TEXT",
+
+        "user_query": "TEXT",
+        "intent": "TEXT",
+
+        "model_name": "TEXT",
+        "location_name": "TEXT",
+        "date_str": "TEXT",
+
+        "api_url": "TEXT",
+        "api_status_code": "INTEGER",
+        "api_success": "INTEGER",
+        "api_response_json": "TEXT",
+
+        "formatted_response_json": "TEXT",
+
+        "status": "TEXT",
+        "error_message": "TEXT"
+    }
+
+    for column_name, column_definition in required_columns.items():
+        _add_sqlite_column_if_missing(
+            cursor=cursor,
+            table_name="agent_logs",
+            column_name=column_name,
+            column_definition=column_definition
+        )
+
+
+def _migrate_sqlite_alert_runs(cursor):
+    """
+    Adds missing columns to old alert_runs tables.
+    """
+
+    required_columns = {
+        "run_id": "TEXT UNIQUE",
+        "generated_at_utc": "TEXT",
+
+        "total_records_received": "INTEGER",
+        "total_records_checked": "INTEGER",
+        "total_records_skipped": "INTEGER",
+
+        "total_alerts_before_filters": "INTEGER",
+        "total_alerts_after_filters": "INTEGER",
+        "saved_alert_count": "INTEGER",
+
+        "critical_count": "INTEGER",
+        "high_count": "INTEGER",
+        "medium_count": "INTEGER",
+        "low_count": "INTEGER",
+
+        "filters_json": "TEXT",
+        "department_count_json": "TEXT",
+        "alert_type_count_json": "TEXT",
+
+        "status": "TEXT",
+        "error_message": "TEXT"
+    }
+
+    for column_name, column_definition in required_columns.items():
+        _add_sqlite_column_if_missing(
+            cursor=cursor,
+            table_name="alert_runs",
+            column_name=column_name,
+            column_definition=column_definition
+        )
+
+
+def _migrate_sqlite_alert_items(cursor):
+    """
+    Adds missing columns to old alert_items tables.
+    """
+
+    required_columns = {
+        "run_id": "TEXT",
+
+        "department": "TEXT",
+        "severity": "TEXT",
+        "alert_type": "TEXT",
+
+        "message": "TEXT",
+        "recommendation": "TEXT",
+
+        "reg_num": "TEXT",
+        "bike_type": "TEXT",
+        "location_name": "TEXT",
+
+        "current_km": "TEXT",
+        "next_service_km": "TEXT",
+
+        "force_block": "TEXT",
+        "service_alert": "TEXT",
+        "booking_status": "TEXT",
+
+        "insurance": "TEXT",
+        "emission": "TEXT",
+
+        "alert_json": "TEXT"
+    }
+
+    for column_name, column_definition in required_columns.items():
+        _add_sqlite_column_if_missing(
+            cursor=cursor,
+            table_name="alert_items",
+            column_name=column_name,
+            column_definition=column_definition
+        )
+
+
+def _create_sqlite_indexes(cursor):
     cursor.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_alert_items_run_id
@@ -316,16 +452,10 @@ def _init_sqlite_db():
         """
     )
 
-    conn.commit()
-    conn.close()
-
 
 def _init_postgres_db():
     """
-    Creates PostgreSQL tables.
-
-    This is prepared now, but do not switch DATABASE_TYPE=postgres
-    until repositories are updated in the next step.
+    Creates PostgreSQL tables and runs lightweight column migrations.
     """
 
     conn = _get_postgres_connection()
@@ -420,6 +550,124 @@ def _init_postgres_db():
         """
     )
 
+    _migrate_postgres_tables(cursor)
+    _create_postgres_indexes(cursor)
+
+    conn.commit()
+    conn.close()
+
+
+def _add_postgres_column_if_missing(
+    cursor,
+    table_name: str,
+    column_name: str,
+    column_definition: str
+):
+    cursor.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = %s
+        AND column_name = %s
+        """,
+        (table_name, column_name)
+    )
+
+    existing = cursor.fetchone()
+
+    if not existing:
+        cursor.execute(
+            f"""
+            ALTER TABLE {table_name}
+            ADD COLUMN {column_name} {column_definition}
+            """
+        )
+
+
+def _migrate_postgres_tables(cursor):
+    agent_log_columns = {
+        "request_id": "TEXT UNIQUE",
+        "timestamp_utc": "TEXT",
+        "user_query": "TEXT",
+        "intent": "TEXT",
+        "model_name": "TEXT",
+        "location_name": "TEXT",
+        "date_str": "TEXT",
+        "api_url": "TEXT",
+        "api_status_code": "INTEGER",
+        "api_success": "BOOLEAN",
+        "api_response_json": "TEXT",
+        "formatted_response_json": "TEXT",
+        "status": "TEXT",
+        "error_message": "TEXT"
+    }
+
+    for column_name, column_definition in agent_log_columns.items():
+        _add_postgres_column_if_missing(
+            cursor,
+            "agent_logs",
+            column_name,
+            column_definition
+        )
+
+    alert_run_columns = {
+        "run_id": "TEXT UNIQUE",
+        "generated_at_utc": "TEXT",
+        "total_records_received": "INTEGER",
+        "total_records_checked": "INTEGER",
+        "total_records_skipped": "INTEGER",
+        "total_alerts_before_filters": "INTEGER",
+        "total_alerts_after_filters": "INTEGER",
+        "saved_alert_count": "INTEGER",
+        "critical_count": "INTEGER",
+        "high_count": "INTEGER",
+        "medium_count": "INTEGER",
+        "low_count": "INTEGER",
+        "filters_json": "TEXT",
+        "department_count_json": "TEXT",
+        "alert_type_count_json": "TEXT",
+        "status": "TEXT",
+        "error_message": "TEXT"
+    }
+
+    for column_name, column_definition in alert_run_columns.items():
+        _add_postgres_column_if_missing(
+            cursor,
+            "alert_runs",
+            column_name,
+            column_definition
+        )
+
+    alert_item_columns = {
+        "run_id": "TEXT",
+        "department": "TEXT",
+        "severity": "TEXT",
+        "alert_type": "TEXT",
+        "message": "TEXT",
+        "recommendation": "TEXT",
+        "reg_num": "TEXT",
+        "bike_type": "TEXT",
+        "location_name": "TEXT",
+        "current_km": "TEXT",
+        "next_service_km": "TEXT",
+        "force_block": "TEXT",
+        "service_alert": "TEXT",
+        "booking_status": "TEXT",
+        "insurance": "TEXT",
+        "emission": "TEXT",
+        "alert_json": "TEXT"
+    }
+
+    for column_name, column_definition in alert_item_columns.items():
+        _add_postgres_column_if_missing(
+            cursor,
+            "alert_items",
+            column_name,
+            column_definition
+        )
+
+
+def _create_postgres_indexes(cursor):
     cursor.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_alert_items_run_id
@@ -447,6 +695,3 @@ def _init_postgres_db():
         ON agent_logs (request_id)
         """
     )
-
-    conn.commit()
-    conn.close()
