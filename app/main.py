@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 from typing import Any, Optional
@@ -23,7 +24,7 @@ from app.services.scheduler_service import SchedulerService
 from app.security.api_key import verify_api_key
 
 
-APP_VERSION = "0.1.3"
+APP_VERSION = "0.1.4"
 
 
 def get_environment() -> str:
@@ -43,6 +44,66 @@ def is_production() -> bool:
     """
 
     return get_environment() == "production"
+
+
+def get_env_int(
+    key: str,
+    default: int,
+    minimum: int = 1,
+    maximum: int = 600
+) -> int:
+    """
+    Safely reads integer config values from environment variables.
+
+    Example:
+    CHAT_TIMEOUT_SECONDS=60
+    """
+
+    try:
+        value = int(os.getenv(key, str(default)))
+        return max(minimum, min(value, maximum))
+
+    except Exception:
+        return default
+
+
+def get_chat_timeout_seconds() -> int:
+    """
+    Timeout for /chat requests.
+    """
+
+    return get_env_int(
+        key="CHAT_TIMEOUT_SECONDS",
+        default=60,
+        minimum=5,
+        maximum=180
+    )
+
+
+def get_alert_run_timeout_seconds() -> int:
+    """
+    Timeout for /alerts/run requests.
+    """
+
+    return get_env_int(
+        key="ALERT_RUN_TIMEOUT_SECONDS",
+        default=120,
+        minimum=10,
+        maximum=300
+    )
+
+
+def get_scheduler_manual_run_timeout_seconds() -> int:
+    """
+    Timeout for /scheduler/run-now requests.
+    """
+
+    return get_env_int(
+        key="SCHEDULER_MANUAL_RUN_TIMEOUT_SECONDS",
+        default=120,
+        minimum=10,
+        maximum=300
+    )
 
 
 def get_cors_origins() -> list[str]:
@@ -126,6 +187,28 @@ def build_error_response(
         headers={
             "X-Request-ID": request_id
         }
+    )
+
+
+def build_timeout_response(
+    request: Request,
+    message: str,
+    code: str,
+    timeout_seconds: int
+) -> JSONResponse:
+    """
+    Builds a standard timeout response.
+    """
+
+    return build_error_response(
+        request=request,
+        status_code=504,
+        message=message,
+        code=code,
+        details={
+            "timeout_seconds": timeout_seconds
+        },
+        expose_details_in_production=True
     )
 
 
@@ -382,6 +465,11 @@ async def root():
         "environment": get_environment(),
         "docs": "/docs",
         "openapi_schema": "/openapi.json",
+        "timeout_settings": {
+            "chat_timeout_seconds": get_chat_timeout_seconds(),
+            "alert_run_timeout_seconds": get_alert_run_timeout_seconds(),
+            "scheduler_manual_run_timeout_seconds": get_scheduler_manual_run_timeout_seconds()
+        },
         "security": {
             "protected_endpoints_require": "x-api-key header"
         },
@@ -471,7 +559,10 @@ async def ready(request: Request):
     "/chat",
     dependencies=[Depends(verify_api_key)]
 )
-async def chat(request: ChatRequest):
+async def chat(
+    request: Request,
+    chat_request: ChatRequest
+):
     """
     Main chat endpoint.
 
@@ -485,7 +576,7 @@ async def chat(request: ChatRequest):
     5. Query + API response + final response are logged
     """
 
-    cleaned_query = request.query.strip()
+    cleaned_query = chat_request.query.strip()
 
     if not cleaned_query:
         raise HTTPException(
@@ -499,7 +590,21 @@ async def chat(request: ChatRequest):
             detail="Query is too long. Please keep it under 1000 characters."
         )
 
-    response_data = await agent.process_query(cleaned_query)
+    timeout_seconds = get_chat_timeout_seconds()
+
+    try:
+        response_data = await asyncio.wait_for(
+            agent.process_query(cleaned_query),
+            timeout=timeout_seconds
+        )
+
+    except asyncio.TimeoutError:
+        return build_timeout_response(
+            request=request,
+            message="Chat request timed out. Please try again with a simpler query.",
+            code="CHAT_TIMEOUT",
+            timeout_seconds=timeout_seconds
+        )
 
     return {
         "query": cleaned_query,
@@ -550,7 +655,21 @@ async def run_alert_check(
             "cooldown": cooldown_check
         }
 
-    api_result = await call_sir_optimized_api_with_metadata()
+    timeout_seconds = get_alert_run_timeout_seconds()
+
+    try:
+        api_result = await asyncio.wait_for(
+            call_sir_optimized_api_with_metadata(),
+            timeout=timeout_seconds
+        )
+
+    except asyncio.TimeoutError:
+        return build_timeout_response(
+            request=request,
+            message="Alert run timed out while fetching fleet data.",
+            code="ALERT_RUN_TIMEOUT",
+            timeout_seconds=timeout_seconds
+        )
 
     if not api_result.get("success"):
         return build_error_response(
@@ -806,7 +925,10 @@ async def scheduler_status():
     "/scheduler/run-now",
     dependencies=[Depends(verify_api_key)]
 )
-async def scheduler_run_now(force: bool = False):
+async def scheduler_run_now(
+    request: Request,
+    force: bool = False
+):
     """
     Manually triggers the same alert check used by the scheduler.
 
@@ -817,10 +939,24 @@ async def scheduler_run_now(force: bool = False):
     - use force=true to bypass cooldown
     """
 
-    result = await scheduler_service.run_alert_check_now(
-        triggered_by="manual_endpoint",
-        force=force
-    )
+    timeout_seconds = get_scheduler_manual_run_timeout_seconds()
+
+    try:
+        result = await asyncio.wait_for(
+            scheduler_service.run_alert_check_now(
+                triggered_by="manual_endpoint",
+                force=force
+            ),
+            timeout=timeout_seconds
+        )
+
+    except asyncio.TimeoutError:
+        return build_timeout_response(
+            request=request,
+            message="Manual scheduler run timed out.",
+            code="SCHEDULER_MANUAL_RUN_TIMEOUT",
+            timeout_seconds=timeout_seconds
+        )
 
     return result
 
