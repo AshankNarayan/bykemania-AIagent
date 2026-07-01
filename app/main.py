@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 import os
 import time
+from collections import defaultdict, deque
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -24,7 +26,14 @@ from app.services.scheduler_service import SchedulerService
 from app.security.api_key import verify_api_key
 
 
-APP_VERSION = "0.1.4"
+APP_VERSION = "0.1.5"
+
+
+# In-memory rate limit store.
+# Works well for one Render instance.
+# If you later scale to multiple instances, move this to Redis/PostgreSQL.
+RATE_LIMIT_STORE: dict[str, deque[float]] = defaultdict(deque)
+RATE_LIMIT_LOCK = asyncio.Lock()
 
 
 def get_environment() -> str:
@@ -54,9 +63,6 @@ def get_env_int(
 ) -> int:
     """
     Safely reads integer config values from environment variables.
-
-    Example:
-    CHAT_TIMEOUT_SECONDS=60
     """
 
     try:
@@ -106,6 +112,45 @@ def get_scheduler_manual_run_timeout_seconds() -> int:
     )
 
 
+def get_chat_rate_limit_per_minute() -> int:
+    """
+    Max /chat requests per minute per API key/IP.
+    """
+
+    return get_env_int(
+        key="CHAT_RATE_LIMIT_PER_MINUTE",
+        default=30,
+        minimum=1,
+        maximum=300
+    )
+
+
+def get_alert_run_rate_limit_per_hour() -> int:
+    """
+    Max /alerts/run requests per hour per API key/IP.
+    """
+
+    return get_env_int(
+        key="ALERT_RUN_RATE_LIMIT_PER_HOUR",
+        default=6,
+        minimum=1,
+        maximum=100
+    )
+
+
+def get_scheduler_run_rate_limit_per_hour() -> int:
+    """
+    Max /scheduler/run-now requests per hour per API key/IP.
+    """
+
+    return get_env_int(
+        key="SCHEDULER_RUN_RATE_LIMIT_PER_HOUR",
+        default=6,
+        minimum=1,
+        maximum=100
+    )
+
+
 def get_cors_origins() -> list[str]:
     """
     Reads allowed CORS origins from environment variable.
@@ -151,13 +196,58 @@ def get_request_id(request: Request) -> str:
     return request.headers.get("x-request-id") or str(uuid4())
 
 
+def get_client_ip(request: Request) -> str:
+    """
+    Gets client IP safely.
+
+    Render/proxies may send x-forwarded-for.
+    """
+
+    forwarded_for = request.headers.get("x-forwarded-for")
+
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+
+    if request.client:
+        return request.client.host
+
+    return "unknown"
+
+
+def get_api_key_hash(request: Request) -> str:
+    """
+    Hashes API key for rate limiting without storing raw API key.
+    """
+
+    api_key = request.headers.get("x-api-key", "")
+
+    if not api_key:
+        return "no-api-key"
+
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
+
+
+def get_rate_limit_identity(request: Request, scope: str) -> str:
+    """
+    Creates a rate-limit identity using:
+    - endpoint/scope
+    - API key hash
+    - client IP
+
+    Raw API key is never stored.
+    """
+
+    return f"{scope}:{get_api_key_hash(request)}:{get_client_ip(request)}"
+
+
 def build_error_response(
     request: Request,
     status_code: int,
     message: str,
     code: str,
     details: Optional[Any] = None,
-    expose_details_in_production: bool = False
+    expose_details_in_production: bool = False,
+    extra_headers: Optional[dict[str, str]] = None
 ) -> JSONResponse:
     """
     Builds a consistent API error response.
@@ -176,6 +266,13 @@ def build_error_response(
     if details is not None and (not is_production() or expose_details_in_production):
         error_data["details"] = details
 
+    headers = {
+        "X-Request-ID": request_id
+    }
+
+    if extra_headers:
+        headers.update(extra_headers)
+
     return JSONResponse(
         status_code=status_code,
         content={
@@ -184,9 +281,7 @@ def build_error_response(
             "error": error_data,
             "request_id": request_id
         },
-        headers={
-            "X-Request-ID": request_id
-        }
+        headers=headers
     )
 
 
@@ -210,6 +305,77 @@ def build_timeout_response(
         },
         expose_details_in_production=True
     )
+
+
+def build_rate_limit_response(
+    request: Request,
+    limit: int,
+    window_seconds: int,
+    retry_after_seconds: int
+) -> JSONResponse:
+    """
+    Builds a standard rate-limit response.
+    """
+
+    return build_error_response(
+        request=request,
+        status_code=429,
+        message="Rate limit exceeded. Please try again later.",
+        code="RATE_LIMIT_EXCEEDED",
+        details={
+            "limit": limit,
+            "window_seconds": window_seconds,
+            "retry_after_seconds": retry_after_seconds
+        },
+        expose_details_in_production=True,
+        extra_headers={
+            "Retry-After": str(retry_after_seconds),
+            "X-RateLimit-Limit": str(limit),
+            "X-RateLimit-Window-Seconds": str(window_seconds)
+        }
+    )
+
+
+async def check_rate_limit(
+    request: Request,
+    scope: str,
+    limit: int,
+    window_seconds: int
+) -> Optional[JSONResponse]:
+    """
+    In-memory sliding-window rate limiter.
+
+    Returns:
+    - None if request is allowed
+    - JSONResponse if request is blocked
+    """
+
+    now = time.time()
+    identity = get_rate_limit_identity(request, scope)
+
+    async with RATE_LIMIT_LOCK:
+        request_times = RATE_LIMIT_STORE[identity]
+
+        while request_times and request_times[0] <= now - window_seconds:
+            request_times.popleft()
+
+        if len(request_times) >= limit:
+            oldest_request_time = request_times[0]
+            retry_after_seconds = max(
+                1,
+                int(window_seconds - (now - oldest_request_time))
+            )
+
+            return build_rate_limit_response(
+                request=request,
+                limit=limit,
+                window_seconds=window_seconds,
+                retry_after_seconds=retry_after_seconds
+            )
+
+        request_times.append(now)
+
+    return None
 
 
 def get_public_backend_error(api_result: dict[str, Any]) -> dict[str, Any]:
@@ -470,6 +636,11 @@ async def root():
             "alert_run_timeout_seconds": get_alert_run_timeout_seconds(),
             "scheduler_manual_run_timeout_seconds": get_scheduler_manual_run_timeout_seconds()
         },
+        "rate_limit_settings": {
+            "chat_rate_limit_per_minute": get_chat_rate_limit_per_minute(),
+            "alert_run_rate_limit_per_hour": get_alert_run_rate_limit_per_hour(),
+            "scheduler_run_rate_limit_per_hour": get_scheduler_run_rate_limit_per_hour()
+        },
         "security": {
             "protected_endpoints_require": "x-api-key header"
         },
@@ -567,14 +738,17 @@ async def chat(
     Main chat endpoint.
 
     Protected by x-api-key.
-
-    Flow:
-    1. User sends natural language query
-    2. Agent parses query
-    3. Agent calls optimized backend API when needed
-    4. Agent formats response
-    5. Query + API response + final response are logged
     """
+
+    rate_limit_response = await check_rate_limit(
+        request=request,
+        scope="chat",
+        limit=get_chat_rate_limit_per_minute(),
+        window_seconds=60
+    )
+
+    if rate_limit_response:
+        return rate_limit_response
 
     cleaned_query = chat_request.query.strip()
 
@@ -628,18 +802,17 @@ async def run_alert_check(
 ):
     """
     Runs alert checking on current fleet data and saves the alert run.
-
-    Protected by x-api-key.
-
-    Cooldown protection:
-    - prevents duplicate/frequent alert runs
-    - use force=true to bypass cooldown
-
-    Examples:
-    /alerts/run
-    /alerts/run?force=true
-    /alerts/run?include_details=true&max_alerts=20
     """
+
+    rate_limit_response = await check_rate_limit(
+        request=request,
+        scope="alerts_run",
+        limit=get_alert_run_rate_limit_per_hour(),
+        window_seconds=3600
+    )
+
+    if rate_limit_response:
+        return rate_limit_response
 
     cooldown_minutes = get_alert_run_cooldown_minutes()
 
@@ -735,8 +908,6 @@ async def run_alert_check(
 async def get_alert_history(limit: int = 10):
     """
     Returns recent alert scan history.
-
-    Protected by x-api-key.
     """
 
     safe_limit = max(1, min(limit, 100))
@@ -761,8 +932,6 @@ async def get_latest_alert_run(
 ):
     """
     Returns the latest saved alert run with limited alert items.
-
-    Protected by x-api-key.
     """
 
     safe_limit = max(1, min(limit, 500))
@@ -797,8 +966,6 @@ async def get_alert_run_details(
 ):
     """
     Returns one saved alert run with limited alert items.
-
-    Protected by x-api-key.
     """
 
     safe_limit = max(1, min(limit, 500))
@@ -829,8 +996,6 @@ async def get_alert_run_details(
 async def dashboard_summary():
     """
     Dashboard home summary.
-
-    Protected by x-api-key.
     """
 
     summary = alert_repo.get_dashboard_summary()
@@ -854,8 +1019,6 @@ async def dashboard_summary():
 async def dashboard_departments(run_id: Optional[str] = None):
     """
     Returns department-wise alert cards.
-
-    Protected by x-api-key.
     """
 
     cards = alert_repo.get_department_cards(run_id=run_id)
@@ -879,8 +1042,6 @@ async def dashboard_department_detail(
 ):
     """
     Returns department-specific dashboard data.
-
-    Protected by x-api-key.
     """
 
     safe_limit = max(1, min(limit, 500))
@@ -911,8 +1072,6 @@ async def dashboard_department_detail(
 async def scheduler_status():
     """
     Returns scheduler status.
-
-    Protected by x-api-key.
     """
 
     return {
@@ -931,13 +1090,17 @@ async def scheduler_run_now(
 ):
     """
     Manually triggers the same alert check used by the scheduler.
-
-    Protected by x-api-key.
-
-    Cooldown protection:
-    - by default it skips if a recent run already exists
-    - use force=true to bypass cooldown
     """
+
+    rate_limit_response = await check_rate_limit(
+        request=request,
+        scope="scheduler_run_now",
+        limit=get_scheduler_run_rate_limit_per_hour(),
+        window_seconds=3600
+    )
+
+    if rate_limit_response:
+        return rate_limit_response
 
     timeout_seconds = get_scheduler_manual_run_timeout_seconds()
 
@@ -968,8 +1131,6 @@ async def scheduler_run_now(
 async def get_recent_logs(limit: int = 10):
     """
     Returns recent query logs.
-
-    Protected by x-api-key.
     """
 
     safe_limit = max(1, min(limit, 50))
@@ -989,8 +1150,6 @@ async def get_recent_logs(limit: int = 10):
 async def get_log_by_request_id(request_id: str):
     """
     Returns full details of one logged query.
-
-    Protected by x-api-key.
     """
 
     log = log_repo.get_log_by_request_id(request_id)
