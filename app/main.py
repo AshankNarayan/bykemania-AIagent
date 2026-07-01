@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -19,10 +19,18 @@ from app.services.scheduler_service import SchedulerService
 from app.security.api_key import verify_api_key
 
 
+APP_VERSION = "0.1.1"
+
+
 app = FastAPI(
     title="BykeMania AI Agent",
     description="Natural Language AI Agent for BykeMania Operations",
-    version="0.1.0"
+    version=APP_VERSION,
+
+    # Important for Render / Swagger deployment
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
 )
 
 app.add_middleware(
@@ -51,7 +59,7 @@ class ChatRequest(BaseModel):
 
 def get_alert_run_cooldown_minutes() -> int:
     """
-    Reads cooldown value from .env.
+    Reads cooldown value from environment variables.
 
     If ALERT_RUN_COOLDOWN_MINUTES=30,
     then the system avoids saving another alert run within 30 minutes
@@ -67,7 +75,7 @@ def get_alert_run_cooldown_minutes() -> int:
 @app.on_event("startup")
 async def startup_event():
     """
-    Starts scheduler when FastAPI starts, only if enabled in .env.
+    Starts scheduler when FastAPI starts, only if enabled in environment variables.
     """
 
     scheduler_status = scheduler_service.start()
@@ -84,6 +92,18 @@ async def shutdown_event():
     print("[Scheduler Shutdown]", scheduler_status)
 
 
+@app.head("/")
+async def root_head():
+    """
+    Lightweight HEAD endpoint for platform health checks.
+
+    This prevents Render from showing:
+    HEAD / 405 Method Not Allowed
+    """
+
+    return Response(status_code=200)
+
+
 @app.get("/")
 async def root():
     """
@@ -95,7 +115,9 @@ async def root():
     return {
         "message": "BykeMania AI Agent is running 🚀",
         "status": "healthy",
-        "version": "0.1.0",
+        "version": APP_VERSION,
+        "docs": "/docs",
+        "openapi_schema": "/openapi.json",
         "security": {
             "protected_endpoints_require": "x-api-key header"
         },
@@ -134,7 +156,7 @@ async def chat(request: ChatRequest):
     Flow:
     1. User sends natural language query
     2. Agent parses query
-    3. Agent calls optimized PHP API
+    3. Agent calls optimized backend API when needed
     4. Agent formats response
     5. Query + API response + final response are logged
     """
