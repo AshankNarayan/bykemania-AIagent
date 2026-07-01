@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -22,7 +23,7 @@ from app.services.scheduler_service import SchedulerService
 from app.security.api_key import verify_api_key
 
 
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.1.3"
 
 
 def get_environment() -> str:
@@ -36,14 +37,20 @@ def get_environment() -> str:
     return os.getenv("ENVIRONMENT", "development").strip().lower()
 
 
+def is_production() -> bool:
+    """
+    Returns True when app is running in production.
+    """
+
+    return get_environment() == "production"
+
+
 def get_cors_origins() -> list[str]:
     """
     Reads allowed CORS origins from environment variable.
 
     Example:
     CORS_ORIGINS=http://localhost:3000,https://your-frontend.com
-
-    If missing, keep a safe development fallback.
     """
 
     raw_origins = os.getenv("CORS_ORIGINS", "").strip()
@@ -55,7 +62,7 @@ def get_cors_origins() -> list[str]:
             if origin.strip()
         ]
 
-    if get_environment() == "production":
+    if is_production():
         return [
             "https://bykemania-agent-api.onrender.com"
         ]
@@ -68,6 +75,80 @@ def get_cors_origins() -> list[str]:
         "http://127.0.0.1:8000",
         "http://localhost:8000"
     ]
+
+
+def get_request_id(request: Request) -> str:
+    """
+    Gets request ID from request state or headers.
+    """
+
+    request_id = getattr(request.state, "request_id", None)
+
+    if request_id:
+        return request_id
+
+    return request.headers.get("x-request-id") or str(uuid4())
+
+
+def build_error_response(
+    request: Request,
+    status_code: int,
+    message: str,
+    code: str,
+    details: Optional[Any] = None,
+    expose_details_in_production: bool = False
+) -> JSONResponse:
+    """
+    Builds a consistent API error response.
+
+    Production behavior:
+    - hides internal details by default
+    - keeps public message and request_id
+    """
+
+    request_id = get_request_id(request)
+
+    error_data: dict[str, Any] = {
+        "code": code
+    }
+
+    if details is not None and (not is_production() or expose_details_in_production):
+        error_data["details"] = details
+
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": "error",
+            "message": message,
+            "error": error_data,
+            "request_id": request_id
+        },
+        headers={
+            "X-Request-ID": request_id
+        }
+    )
+
+
+def get_public_backend_error(api_result: dict[str, Any]) -> dict[str, Any]:
+    """
+    Returns backend API error safely.
+
+    In production:
+    - do not expose raw internal API error text
+    - keep status code only
+
+    In development:
+    - expose raw error for debugging
+    """
+
+    safe_error = {
+        "api_status_code": api_result.get("status_code")
+    }
+
+    if not is_production():
+        safe_error["raw_error"] = api_result.get("error")
+
+    return safe_error
 
 
 app = FastAPI(
@@ -101,6 +182,8 @@ async def add_request_metadata(request: Request, call_next):
     """
 
     request_id = request.headers.get("x-request-id") or str(uuid4())
+    request.state.request_id = request_id
+
     start_time = time.perf_counter()
 
     try:
@@ -124,11 +207,19 @@ async def add_request_metadata(request: Request, call_next):
             }
         )
 
+        public_message = "Internal server error"
+
+        if not is_production():
+            public_message = f"{type(exc).__name__}: {str(exc)}"
+
         return JSONResponse(
             status_code=500,
             content={
                 "status": "error",
-                "message": "Internal server error",
+                "message": public_message,
+                "error": {
+                    "code": "INTERNAL_SERVER_ERROR"
+                },
                 "request_id": request_id
             },
             headers={
@@ -146,6 +237,72 @@ async def add_request_metadata(request: Request, call_next):
     response.headers["X-Process-Time-MS"] = str(process_time_ms)
 
     return response
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(
+    request: Request,
+    exc: HTTPException
+):
+    """
+    Standardizes HTTPException responses.
+
+    Example:
+    - 400 empty query
+    - 401/403 invalid API key
+    - 404 not found
+    """
+
+    detail = exc.detail
+
+    if isinstance(detail, str):
+        message = detail
+    else:
+        message = "Request failed."
+
+    if exc.status_code >= 500 and is_production():
+        message = "Internal server error"
+
+    headers = dict(exc.headers or {})
+    headers["X-Request-ID"] = get_request_id(request)
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "status": "error",
+            "message": message,
+            "error": {
+                "code": "HTTP_EXCEPTION"
+            },
+            "request_id": get_request_id(request)
+        },
+        headers=headers
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request,
+    exc: RequestValidationError
+):
+    """
+    Standardizes validation errors.
+
+    Example:
+    - missing query field in /chat body
+    - wrong JSON type
+    """
+
+    details = exc.errors()
+
+    return build_error_response(
+        request=request,
+        status_code=422,
+        message="Invalid request data.",
+        code="VALIDATION_ERROR",
+        details=details,
+        expose_details_in_production=True
+    )
 
 
 # Shared service instances
@@ -270,7 +427,7 @@ async def health():
 
 
 @app.get("/ready")
-async def ready():
+async def ready(request: Request):
     """
     Readiness check.
 
@@ -289,14 +446,23 @@ async def ready():
         }
 
     except Exception as exc:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "not_ready",
-                "service": "bykemania-agent-api",
-                "database": "error",
+        print(
+            "[Readiness Error]",
+            {
+                "request_id": get_request_id(request),
                 "error_type": type(exc).__name__,
-                "message": str(exc)
+                "error": str(exc)
+            }
+        )
+
+        return build_error_response(
+            request=request,
+            status_code=503,
+            message="Service is not ready.",
+            code="READINESS_CHECK_FAILED",
+            details={
+                "error_type": type(exc).__name__,
+                "error": str(exc)
             }
         )
 
@@ -347,6 +513,7 @@ async def chat(request: ChatRequest):
     dependencies=[Depends(verify_api_key)]
 )
 async def run_alert_check(
+    request: Request,
     include_details: bool = False,
     max_alerts: int = 20,
     department: Optional[str] = None,
@@ -386,21 +553,26 @@ async def run_alert_check(
     api_result = await call_sir_optimized_api_with_metadata()
 
     if not api_result.get("success"):
-        return {
-            "status": "error",
-            "message": "Could not fetch data from optimized API.",
-            "error": api_result.get("error"),
-            "api_status_code": api_result.get("status_code")
-        }
+        return build_error_response(
+            request=request,
+            status_code=502,
+            message="Could not fetch data from optimized API.",
+            code="BACKEND_API_ERROR",
+            details=get_public_backend_error(api_result)
+        )
 
     api_data = api_result.get("data", [])
 
     if not isinstance(api_data, list):
-        return {
-            "status": "error",
-            "message": "API returned unexpected data format.",
-            "data_type": str(type(api_data))
-        }
+        return build_error_response(
+            request=request,
+            status_code=502,
+            message="Backend API returned unexpected data format.",
+            code="INVALID_BACKEND_DATA",
+            details={
+                "data_type": str(type(api_data))
+            }
+        )
 
     safe_max_alerts = max(1, min(max_alerts, 100))
 
