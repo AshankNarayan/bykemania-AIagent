@@ -1,12 +1,15 @@
 import os
+import time
 from typing import Optional
+from uuid import uuid4
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
 
@@ -19,7 +22,52 @@ from app.services.scheduler_service import SchedulerService
 from app.security.api_key import verify_api_key
 
 
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
+
+
+def get_environment() -> str:
+    """
+    Returns current app environment.
+    Example:
+    - development
+    - production
+    """
+
+    return os.getenv("ENVIRONMENT", "development").strip().lower()
+
+
+def get_cors_origins() -> list[str]:
+    """
+    Reads allowed CORS origins from environment variable.
+
+    Example:
+    CORS_ORIGINS=http://localhost:3000,https://your-frontend.com
+
+    If missing, keep a safe development fallback.
+    """
+
+    raw_origins = os.getenv("CORS_ORIGINS", "").strip()
+
+    if raw_origins:
+        return [
+            origin.strip()
+            for origin in raw_origins.split(",")
+            if origin.strip()
+        ]
+
+    if get_environment() == "production":
+        return [
+            "https://bykemania-agent-api.onrender.com"
+        ]
+
+    return [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8000",
+        "http://localhost:8000"
+    ]
 
 
 app = FastAPI(
@@ -27,7 +75,7 @@ app = FastAPI(
     description="Natural Language AI Agent for BykeMania Operations",
     version=APP_VERSION,
 
-    # Important for Render / Swagger deployment
+    # Keep Swagger/OpenAPI available on Render
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json"
@@ -35,11 +83,69 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_request_metadata(request: Request, call_next):
+    """
+    Adds request tracking metadata.
+
+    Every response receives:
+    - X-Request-ID
+    - X-Process-Time-MS
+    """
+
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    start_time = time.perf_counter()
+
+    try:
+        response = await call_next(request)
+
+    except Exception as exc:
+        process_time_ms = round(
+            (time.perf_counter() - start_time) * 1000,
+            2
+        )
+
+        print(
+            "[Unhandled Error]",
+            {
+                "request_id": request_id,
+                "path": str(request.url.path),
+                "method": request.method,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "process_time_ms": process_time_ms
+            }
+        )
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": "Internal server error",
+                "request_id": request_id
+            },
+            headers={
+                "X-Request-ID": request_id,
+                "X-Process-Time-MS": str(process_time_ms)
+            }
+        )
+
+    process_time_ms = round(
+        (time.perf_counter() - start_time) * 1000,
+        2
+    )
+
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Process-Time-MS"] = str(process_time_ms)
+
+    return response
 
 
 # Shared service instances
@@ -107,7 +213,7 @@ async def root_head():
 @app.get("/")
 async def root():
     """
-    Public health endpoint.
+    Public health/info endpoint.
 
     This endpoint is intentionally not API-key protected.
     """
@@ -116,12 +222,16 @@ async def root():
         "message": "BykeMania AI Agent is running 🚀",
         "status": "healthy",
         "version": APP_VERSION,
+        "environment": get_environment(),
         "docs": "/docs",
         "openapi_schema": "/openapi.json",
         "security": {
             "protected_endpoints_require": "x-api-key header"
         },
         "available_endpoints": {
+            "health": "GET /health",
+            "ready": "GET /ready",
+
             "chat": "POST /chat",
             "recent_logs": "GET /logs/recent",
             "full_log": "GET /logs/{request_id}",
@@ -143,6 +253,54 @@ async def root():
     }
 
 
+@app.get("/health")
+async def health():
+    """
+    Lightweight public health check.
+
+    Use this for uptime checks and Render health checks.
+    """
+
+    return {
+        "status": "healthy",
+        "service": "bykemania-agent-api",
+        "version": APP_VERSION,
+        "environment": get_environment()
+    }
+
+
+@app.get("/ready")
+async def ready():
+    """
+    Readiness check.
+
+    This confirms that core repositories can initialize.
+    It does not call the private fleet backend.
+    """
+
+    try:
+        log_repo.get_recent_logs(limit=1)
+
+        return {
+            "status": "ready",
+            "service": "bykemania-agent-api",
+            "database": "connected",
+            "version": APP_VERSION
+        }
+
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "service": "bykemania-agent-api",
+                "database": "error",
+                "error_type": type(exc).__name__,
+                "message": str(exc)
+            }
+        )
+
+
 @app.post(
     "/chat",
     dependencies=[Depends(verify_api_key)]
@@ -161,10 +319,24 @@ async def chat(request: ChatRequest):
     5. Query + API response + final response are logged
     """
 
-    response_data = await agent.process_query(request.query)
+    cleaned_query = request.query.strip()
+
+    if not cleaned_query:
+        raise HTTPException(
+            status_code=400,
+            detail="Query cannot be empty."
+        )
+
+    if len(cleaned_query) > 1000:
+        raise HTTPException(
+            status_code=400,
+            detail="Query is too long. Please keep it under 1000 characters."
+        )
+
+    response_data = await agent.process_query(cleaned_query)
 
     return {
-        "query": request.query,
+        "query": cleaned_query,
         "response": response_data,
         "status": "success"
     }
@@ -230,10 +402,12 @@ async def run_alert_check(
             "data_type": str(type(api_data))
         }
 
+    safe_max_alerts = max(1, min(max_alerts, 100))
+
     alert_result = alert_engine.generate_alerts(
         api_data=api_data,
         include_details=include_details,
-        max_alerts=max_alerts,
+        max_alerts=safe_max_alerts,
         department=department,
         severity=severity,
         include_inactive=include_inactive
@@ -300,8 +474,10 @@ async def get_latest_alert_run(
     Protected by x-api-key.
     """
 
+    safe_limit = max(1, min(limit, 500))
+
     latest = alert_repo.get_latest_alert_run(
-        limit=limit,
+        limit=safe_limit,
         department=department,
         severity=severity
     )
@@ -334,9 +510,11 @@ async def get_alert_run_details(
     Protected by x-api-key.
     """
 
+    safe_limit = max(1, min(limit, 500))
+
     alert_run = alert_repo.get_alert_run_by_id(
         run_id=run_id,
-        limit=limit,
+        limit=safe_limit,
         department=department,
         severity=severity
     )
@@ -414,10 +592,12 @@ async def dashboard_department_detail(
     Protected by x-api-key.
     """
 
+    safe_limit = max(1, min(limit, 500))
+
     data = alert_repo.get_department_dashboard(
         department_name=department_name,
         run_id=run_id,
-        limit=limit,
+        limit=safe_limit,
         severity=severity
     )
 
