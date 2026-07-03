@@ -1,14 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, apiPost, getApiBaseUrl } from "./api.js";
 
 const STORAGE_KEY = "bykemania_dashboard_api_key";
 
 function JsonBlock({ data }) {
-  return (
-    <pre className="json-block">
-      {JSON.stringify(data, null, 2)}
-    </pre>
-  );
+  return <pre className="json-block">{JSON.stringify(data, null, 2)}</pre>;
 }
 
 function StatusPill({ status }) {
@@ -31,9 +27,7 @@ function EmptyState({ title, message }) {
 }
 
 function ErrorBox({ error }) {
-  if (!error) {
-    return null;
-  }
+  if (!error) return null;
 
   return (
     <div className="error-box">
@@ -46,47 +40,557 @@ function MetricCard({ title, value, subtitle }) {
   return (
     <div className="metric-card">
       <p>{title}</p>
-      <h2>{value}</h2>
+      <h2>{formatValue(value)}</h2>
       {subtitle ? <span>{subtitle}</span> : null}
     </div>
   );
 }
 
+function formatValue(value) {
+  if (value === undefined || value === null || value === "") return "-";
+
+  if (typeof value === "boolean") return value ? "true" : "false";
+
+  if (typeof value === "number") return value.toLocaleString("en-IN");
+
+  if (typeof value === "object") {
+    if (Array.isArray(value)) return value.length.toLocaleString("en-IN");
+
+    if ("total_alerts" in value) return formatValue(value.total_alerts);
+    if ("total" in value) return formatValue(value.total);
+    if ("count" in value) return formatValue(value.count);
+
+    return "-";
+  }
+
+  return String(value);
+}
+
+function compactText(value, maxLength = 30) {
+  const text = formatValue(value);
+
+  if (text.length <= maxLength) return text;
+
+  return `${text.slice(0, maxLength)}...`;
+}
+
+function pick(source, keys, fallback = undefined) {
+  if (!source || typeof source !== "object") return fallback;
+
+  for (const key of keys) {
+    if (key.includes(".")) {
+      const parts = key.split(".");
+      let current = source;
+
+      for (const part of parts) {
+        if (!current || typeof current !== "object" || !(part in current)) {
+          current = undefined;
+          break;
+        }
+
+        current = current[part];
+      }
+
+      if (current !== undefined && current !== null && current !== "") {
+        return current;
+      }
+    } else if (
+      source[key] !== undefined &&
+      source[key] !== null &&
+      source[key] !== ""
+    ) {
+      return source[key];
+    }
+  }
+
+  return fallback;
+}
+
+function getDashboardPayload(dashboardSummary) {
+  if (!dashboardSummary) return null;
+
+  return (
+    dashboardSummary.dashboard ||
+    dashboardSummary.data ||
+    dashboardSummary.summary ||
+    dashboardSummary
+  );
+}
+
+function getSummaryObject(source) {
+  if (!source) return {};
+
+  return (
+    source.summary ||
+    source.latest_alert_run?.summary ||
+    source.latest_alert_run ||
+    source
+  );
+}
+
 function getDepartmentName(card) {
   return (
-    card.department_name ||
-    card.department ||
-    card.name ||
-    card.title ||
-    "Unknown Department"
+    pick(card, [
+      "department",
+      "department_name",
+      "name",
+      "title",
+      "departmentTitle",
+    ]) || "Unknown Department"
   );
+}
+
+function getDepartmentSummary(card) {
+  return card?.summary || card || {};
 }
 
 function getDepartmentCount(card) {
+  const summary = getDepartmentSummary(card);
+
   return (
-    card.total_alerts ??
-    card.alert_count ??
-    card.count ??
-    card.total ??
-    "-"
+    Number(
+      pick(
+        summary,
+        ["total_alerts", "alert_count", "count", "total", "total_items"],
+        0
+      )
+    ) || 0
   );
 }
 
-function getSeverityText(card) {
-  const high = card.high_count ?? card.high ?? card.HIGH;
-  const medium = card.medium_count ?? card.medium ?? card.MEDIUM;
-  const low = card.low_count ?? card.low ?? card.LOW;
+function getSeverityCount(source, severity) {
+  const lower = severity.toLowerCase();
+  const upper = severity.toUpperCase();
 
-  const parts = [];
+  const summary = getDepartmentSummary(source);
 
-  if (high !== undefined) parts.push(`High: ${high}`);
-  if (medium !== undefined) parts.push(`Medium: ${medium}`);
-  if (low !== undefined) parts.push(`Low: ${low}`);
+  return pick(
+    summary,
+    [
+      lower,
+      upper,
+      `${lower}_count`,
+      `${upper}_count`,
+      `severity.${lower}`,
+      `severity.${upper}`,
+      `summary.${lower}`,
+      `summary.${upper}`,
+      `summary.${lower}_count`,
+      `summary.${upper}_count`,
+    ],
+    0
+  );
+}
 
-  return parts.length ? parts.join(" • ") : "Severity details available in raw data";
+function getAlertTypeCount(source) {
+  if (!source) return {};
+
+  return (
+    source.alert_type_count ||
+    source.alertTypeCount ||
+    source.type_count ||
+    source.types ||
+    source.summary?.alert_type_count ||
+    {}
+  );
+}
+
+function getAlertItems(source) {
+  if (!source) return [];
+
+  const items =
+    source.items ||
+    source.alerts ||
+    source.alert_items ||
+    source.data ||
+    source.dashboard?.items ||
+    source.dashboard?.alerts ||
+    [];
+
+  return Array.isArray(items) ? items : [];
+}
+
+function extractVehicleFromMessage(message) {
+  const text = String(message || "").trim();
+
+  if (!text) {
+    return "-";
+  }
+
+  const match = text.match(/\b[A-Z]{2}\d{2}[A-Z]{1,3}\d{3,5}\b/i);
+
+  if (match) {
+    return match[0].toUpperCase();
+  }
+
+  const firstWord = text.split(" ")[0];
+
+  if (/^[A-Z0-9]{6,12}$/i.test(firstWord)) {
+    return firstWord.toUpperCase();
+  }
+
+  return "-";
+}
+
+function getDepartmentDetailPayload(departmentDetail) {
+  if (!departmentDetail) return null;
+
+  return (
+    departmentDetail.dashboard ||
+    departmentDetail.alert_run ||
+    departmentDetail.data ||
+    departmentDetail
+  );
+}
+
+function MessageText({ text }) {
+  const parts = String(text || "").split(/(\*\*.*?\*\*)/g);
+
+  return (
+    <p>
+      {parts.map((part, index) => {
+        if (part.startsWith("**") && part.endsWith("**")) {
+          return <strong key={index}>{part.slice(2, -2)}</strong>;
+        }
+
+        return <span key={index}>{part}</span>;
+      })}
+    </p>
+  );
+}
+
+function DashboardSummaryCards({ dashboardSummary, departments }) {
+  const payload = getDashboardPayload(dashboardSummary);
+
+  if (!payload) {
+    return (
+      <EmptyState
+        title="No dashboard data loaded"
+        message="Click Load Dashboard after saving your API key."
+      />
+    );
+  }
+
+  const summary = getSummaryObject(payload);
+
+  const departmentTotalAlerts = departments.reduce(
+    (sum, department) => sum + getDepartmentCount(department),
+    0
+  );
+
+  const departmentCriticalAlerts = departments.reduce(
+    (sum, department) => sum + Number(getSeverityCount(department, "critical")),
+    0
+  );
+
+  const departmentHighAlerts = departments.reduce(
+    (sum, department) => sum + Number(getSeverityCount(department, "high")),
+    0
+  );
+
+  const departmentMediumAlerts = departments.reduce(
+    (sum, department) => sum + Number(getSeverityCount(department, "medium")),
+    0
+  );
+
+  const departmentLowAlerts = departments.reduce(
+    (sum, department) => sum + Number(getSeverityCount(department, "low")),
+    0
+  );
+
+  const totalAlerts =
+    Number(
+      pick(summary, ["total_alerts", "alert_count", "alerts_count", "total"], 0)
+    ) || departmentTotalAlerts;
+
+  const criticalAlerts =
+    Number(getSeverityCount(summary, "critical")) || departmentCriticalAlerts;
+
+  const highAlerts =
+    Number(getSeverityCount(summary, "high")) || departmentHighAlerts;
+
+  const mediumAlerts =
+    Number(getSeverityCount(summary, "medium")) || departmentMediumAlerts;
+
+  const lowAlerts =
+    Number(getSeverityCount(summary, "low")) || departmentLowAlerts;
+
+  const latestRunId = pick(
+    payload,
+    ["run_id", "latest_run_id", "latest_alert_run.run_id", "summary.run_id"],
+    "-"
+  );
+
+  const generatedAt = pick(
+    payload,
+    [
+      "timestamp_utc",
+      "generated_at",
+      "created_at",
+      "latest_alert_run.timestamp_utc",
+      "latest_alert_run.created_at",
+      "summary.timestamp_utc",
+    ],
+    "-"
+  );
+
+  return (
+    <>
+      <div className="metric-grid">
+        <MetricCard
+          title="Total Alerts"
+          value={totalAlerts}
+          subtitle="Across latest alert run"
+        />
+
+        <MetricCard
+          title="Departments"
+          value={departments.length}
+          subtitle="Department alert groups"
+        />
+
+        <MetricCard
+          title="Critical Alerts"
+          value={criticalAlerts}
+          subtitle="Highest priority"
+        />
+
+        <MetricCard
+          title="High Alerts"
+          value={highAlerts}
+          subtitle="Needs attention"
+        />
+      </div>
+
+      <div className="severity-strip">
+        <div className="severity-item critical">
+          <span>Critical</span>
+          <strong>{formatValue(criticalAlerts)}</strong>
+        </div>
+
+        <div className="severity-item high">
+          <span>High</span>
+          <strong>{formatValue(highAlerts)}</strong>
+        </div>
+
+        <div className="severity-item medium">
+          <span>Medium</span>
+          <strong>{formatValue(mediumAlerts)}</strong>
+        </div>
+
+        <div className="severity-item low">
+          <span>Low</span>
+          <strong>{formatValue(lowAlerts)}</strong>
+        </div>
+      </div>
+
+      <div className="info-grid">
+        <div className="info-card">
+          <span>Latest Run ID</span>
+          <strong>{compactText(latestRunId, 42)}</strong>
+        </div>
+
+        <div className="info-card">
+          <span>Generated At</span>
+          <strong>{compactText(generatedAt, 42)}</strong>
+        </div>
+      </div>
+
+      <details className="raw-details">
+        <summary>View raw dashboard response</summary>
+        <JsonBlock data={dashboardSummary} />
+      </details>
+    </>
+  );
+}
+
+function DepartmentCard({ department, active, onClick }) {
+  const departmentName = getDepartmentName(department);
+  const total = getDepartmentCount(department);
+  const critical = getSeverityCount(department, "critical");
+  const high = getSeverityCount(department, "high");
+  const medium = getSeverityCount(department, "medium");
+  const low = getSeverityCount(department, "low");
+
+  return (
+    <button
+      className={`department-card ${active ? "active" : ""}`}
+      onClick={onClick}
+    >
+      <div className="department-card-main">
+        <h3>{departmentName}</h3>
+
+        <div className="mini-severity-row">
+          <span className="mini critical">C: {formatValue(critical)}</span>
+          <span className="mini high">H: {formatValue(high)}</span>
+          <span className="mini medium">M: {formatValue(medium)}</span>
+          <span className="mini low">L: {formatValue(low)}</span>
+        </div>
+      </div>
+
+      <strong>{formatValue(total)}</strong>
+    </button>
+  );
+}
+
+function DepartmentDetailView({ departmentDetail }) {
+  const payload = getDepartmentDetailPayload(departmentDetail);
+
+  if (!payload) {
+    return (
+      <EmptyState
+        title="No department detail loaded"
+        message="Select a department card to view details."
+      />
+    );
+  }
+
+  const summary = getSummaryObject(payload);
+  const alertTypeCount = getAlertTypeCount(payload);
+  const items = getAlertItems(payload);
+
+  const total = pick(summary, ["total_alerts", "total", "count"], 0);
+  const critical = getSeverityCount(summary, "critical");
+  const high = getSeverityCount(summary, "high");
+  const medium = getSeverityCount(summary, "medium");
+  const low = getSeverityCount(summary, "low");
+
+  const alertTypeEntries = Object.entries(alertTypeCount || {});
+
+  return (
+    <div className="department-detail-view">
+      <div className="metric-grid">
+        <MetricCard
+          title="Total Alerts"
+          value={total}
+          subtitle="Selected department"
+        />
+
+        <MetricCard
+          title="Critical"
+          value={critical}
+          subtitle="Highest priority"
+        />
+
+        <MetricCard title="High" value={high} subtitle="Needs attention" />
+
+        <MetricCard
+          title="Medium / Low"
+          value={`${formatValue(medium)} / ${formatValue(low)}`}
+          subtitle="Remaining alerts"
+        />
+      </div>
+
+      {alertTypeEntries.length ? (
+        <div className="alert-type-section">
+          <h3>Alert Type Breakdown</h3>
+
+          <div className="alert-type-grid">
+            {alertTypeEntries.map(([type, count]) => (
+              <div className="alert-type-card" key={type}>
+                <span>{type.replaceAll("_", " ")}</span>
+                <strong>{formatValue(count)}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="alert-table-section">
+        <h3>Recent Alert Items</h3>
+
+        {items.length ? (
+          <div className="table-wrap">
+            <table className="alert-table">
+              <thead>
+                <tr>
+                  <th>Severity</th>
+                  <th>Type</th>
+                  <th>Vehicle</th>
+                  <th>Location</th>
+                  <th>Message</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {items.slice(0, 25).map((item, index) => {
+                  const severity = pick(item, ["severity"], "-");
+
+                  const type = pick(
+                    item,
+                    ["alert_type", "type", "category"],
+                    "-"
+                  );
+
+                  const message = pick(
+                    item,
+                    ["message", "description", "reason", "title", "alert_message"],
+                    "-"
+                  );
+
+                  const vehicle =
+                    pick(
+                      item,
+                      [
+                        "vehicle_number",
+                        "vehicle_no",
+                        "registration_number",
+                        "registration_no",
+                        "reg_no",
+                        "reg_number",
+                        "vehicle_reg_no",
+                        "bike_number",
+                        "bike_no",
+                        "number_plate",
+                        "vehicle_id",
+                        "bike_id",
+                        "metadata.vehicle_number",
+                        "metadata.registration_number",
+                        "metadata.reg_no",
+                      ],
+                      ""
+                    ) || extractVehicleFromMessage(message);
+
+                  const location = pick(
+                    item,
+                    ["location", "location_name", "branch", "station"],
+                    "-"
+                  );
+
+                  return (
+                    <tr key={`${vehicle}-${type}-${index}`}>
+                      <td>
+                        <StatusPill status={severity} />
+                      </td>
+                      <td>{formatValue(type).replaceAll("_", " ")}</td>
+                      <td>{formatValue(vehicle)}</td>
+                      <td>{formatValue(location)}</td>
+                      <td>{formatValue(message)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState
+            title="No alert items found"
+            message="The department summary loaded, but no item list was returned."
+          />
+        )}
+      </div>
+
+      <details className="raw-details">
+        <summary>View raw department response</summary>
+        <JsonBlock data={departmentDetail} />
+      </details>
+    </div>
+  );
 }
 
 function App() {
+  const chatBottomRef = useRef(null);
+
   const [apiKey, setApiKey] = useState(() => {
     return localStorage.getItem(STORAGE_KEY) || "";
   });
@@ -173,9 +677,7 @@ function App() {
   }
 
   async function loadDashboard() {
-    if (!requireApiKey()) {
-      return;
-    }
+    if (!requireApiKey()) return;
 
     setLoading((prev) => ({ ...prev, dashboard: true }));
     setError("");
@@ -186,11 +688,13 @@ function App() {
         apiGet("/dashboard/departments", savedApiKey),
       ]);
 
-      setDashboardSummary(summaryData);
-      setDepartments(departmentsData.departments || []);
+      const departmentCards = departmentsData.departments || [];
 
-      if (!selectedDepartment && departmentsData.departments?.length) {
-        setSelectedDepartment(getDepartmentName(departmentsData.departments[0]));
+      setDashboardSummary(summaryData);
+      setDepartments(departmentCards);
+
+      if (!selectedDepartment && departmentCards.length) {
+        setSelectedDepartment(getDepartmentName(departmentCards[0]));
       }
     } catch (err) {
       setError(err.message);
@@ -200,9 +704,7 @@ function App() {
   }
 
   async function loadLogs() {
-    if (!requireApiKey()) {
-      return;
-    }
+    if (!requireApiKey()) return;
 
     setLoading((prev) => ({ ...prev, logs: true }));
     setError("");
@@ -218,13 +720,8 @@ function App() {
   }
 
   async function loadDepartmentDetail(departmentName) {
-    if (!requireApiKey()) {
-      return;
-    }
-
-    if (!departmentName) {
-      return;
-    }
+    if (!requireApiKey()) return;
+    if (!departmentName) return;
 
     setLoading((prev) => ({ ...prev, department: true }));
     setError("");
@@ -248,9 +745,7 @@ function App() {
   async function sendChatMessage(event) {
     event.preventDefault();
 
-    if (!requireApiKey()) {
-      return;
-    }
+    if (!requireApiKey()) return;
 
     const cleanMessage = chatInput.trim();
 
@@ -262,13 +757,15 @@ function App() {
     setLoading((prev) => ({ ...prev, chat: true }));
     setError("");
 
-    const userMessage = {
-      role: "user",
-      text: cleanMessage,
-      timestamp: new Date().toLocaleTimeString(),
-    };
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        role: "user",
+        text: cleanMessage,
+        timestamp: new Date().toLocaleTimeString(),
+      },
+    ]);
 
-    setChatMessages((prev) => [...prev, userMessage]);
     setChatInput("");
 
     try {
@@ -285,23 +782,25 @@ function App() {
         data?.response?.message ||
         JSON.stringify(data?.response || data, null, 2);
 
-      const assistantMessage = {
-        role: "assistant",
-        text: responseText,
-        raw: data,
-        timestamp: new Date().toLocaleTimeString(),
-      };
-
-      setChatMessages((prev) => [...prev, assistantMessage]);
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: responseText,
+          raw: data,
+          timestamp: new Date().toLocaleTimeString(),
+        },
+      ]);
     } catch (err) {
-      const errorMessage = {
-        role: "assistant",
-        text: `Error: ${err.message}`,
-        raw: err.data || null,
-        timestamp: new Date().toLocaleTimeString(),
-      };
-
-      setChatMessages((prev) => [...prev, errorMessage]);
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: `Error: ${err.message}`,
+          raw: err.data || null,
+          timestamp: new Date().toLocaleTimeString(),
+        },
+      ]);
     } finally {
       setLoading((prev) => ({ ...prev, chat: false }));
     }
@@ -316,6 +815,13 @@ function App() {
       loadDepartmentDetail(selectedDepartment);
     }
   }, [selectedDepartment]);
+
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "end",
+    });
+  }, [chatMessages]);
 
   const schedulerEnabled = scheduler?.scheduler?.enabled;
 
@@ -424,14 +930,10 @@ function App() {
             </button>
           </div>
 
-          {dashboardSummary ? (
-            <JsonBlock data={dashboardSummary.dashboard || dashboardSummary} />
-          ) : (
-            <EmptyState
-              title="No dashboard data loaded"
-              message="Click Load Dashboard after saving your API key."
-            />
-          )}
+          <DashboardSummaryCards
+            dashboardSummary={dashboardSummary}
+            departments={departments}
+          />
         </section>
 
         <section id="departments" className="section">
@@ -446,21 +948,14 @@ function App() {
             <div className="department-grid">
               {departments.map((department, index) => {
                 const departmentName = getDepartmentName(department);
-                const isActive = departmentName === selectedDepartment;
 
                 return (
-                  <button
+                  <DepartmentCard
                     key={`${departmentName}-${index}`}
-                    className={`department-card ${isActive ? "active" : ""}`}
+                    department={department}
+                    active={departmentName === selectedDepartment}
                     onClick={() => setSelectedDepartment(departmentName)}
-                  >
-                    <div>
-                      <h3>{departmentName}</h3>
-                      <p>{getSeverityText(department)}</p>
-                    </div>
-
-                    <strong>{getDepartmentCount(department)}</strong>
-                  </button>
+                  />
                 );
               })}
             </div>
@@ -488,14 +983,7 @@ function App() {
               ) : null}
             </div>
 
-            {departmentDetail ? (
-              <JsonBlock data={departmentDetail.dashboard || departmentDetail} />
-            ) : (
-              <EmptyState
-                title="No department detail loaded"
-                message="Select a department card to view details."
-              />
-            )}
+            <DepartmentDetailView departmentDetail={departmentDetail} />
           </div>
         </section>
 
@@ -519,7 +1007,7 @@ function App() {
                     <span>{message.timestamp}</span>
                   </div>
 
-                  <p>{message.text}</p>
+                  <MessageText text={message.text} />
 
                   {message.raw ? (
                     <details>
@@ -535,6 +1023,8 @@ function App() {
                 message="Ask something like: Tell me all the active locations."
               />
             )}
+
+            <div ref={chatBottomRef} />
           </div>
 
           <form className="chat-form" onSubmit={sendChatMessage}>
