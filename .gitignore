@@ -38,6 +38,7 @@ tmp/
 secrets.json
 credentials.json
 
+.env.local
 .env
 venv/
 .venv/
