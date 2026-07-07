@@ -18,12 +18,13 @@ from pydantic import BaseModel
 import uvicorn
 
 from app.agent import BykeManiaAgent
-from app.storage.log_repository import AgentLogRepository
-from app.storage.alert_repository import AlertRepository
-from app.tools.optimized_api import call_sir_optimized_api_with_metadata
-from app.services.alert_engine import AlertEngine
-from app.services.scheduler_service import SchedulerService
 from app.security.api_key import verify_api_key
+from app.services.alert_engine import AlertEngine
+from app.services.operations_insights import OperationsInsightsService
+from app.services.scheduler_service import SchedulerService
+from app.storage.alert_repository import AlertRepository
+from app.storage.log_repository import AgentLogRepository
+from app.tools.optimized_api import call_sir_optimized_api_with_metadata
 
 
 APP_VERSION = "0.1.5"
@@ -559,6 +560,7 @@ agent = BykeManiaAgent()
 log_repo = AgentLogRepository()
 alert_engine = AlertEngine()
 alert_repo = AlertRepository()
+insights_service = OperationsInsightsService()
 scheduler_service = SchedulerService(
     alert_engine=alert_engine,
     alert_repo=alert_repo
@@ -661,6 +663,8 @@ async def root():
             "dashboard_summary": "GET /dashboard/summary",
             "dashboard_departments": "GET /dashboard/departments",
             "dashboard_department_detail": "GET /dashboard/department/{department_name}",
+
+            "todays_ai_insights": "GET /insights/today",
 
             "scheduler_status": "GET /scheduler/status",
             "scheduler_run_now": "POST /scheduler/run-now",
@@ -1062,6 +1066,67 @@ async def dashboard_department_detail(
     return {
         "status": "success",
         "dashboard": data
+    }
+
+
+@app.get(
+    "/insights/today",
+    dependencies=[Depends(verify_api_key)]
+)
+async def todays_ai_insights(limit: int = 10):
+    """
+    Returns today's AI-generated operational insights.
+
+    Uses existing alert/dashboard data only.
+    Does not require additional APIs.
+    """
+
+    safe_limit = max(1, min(limit, 50))
+
+    dashboard_data = None
+    department_cards = []
+    latest_alert_run = None
+
+    try:
+        dashboard_data = alert_repo.get_dashboard_summary()
+    except Exception as exc:
+        print(
+            f"[Insights Warning] Could not load dashboard summary: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    try:
+        department_cards = alert_repo.get_department_cards()
+    except Exception as exc:
+        print(
+            f"[Insights Warning] Could not load department cards: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    try:
+        latest_alert_run = alert_repo.get_latest_alert_run(limit=safe_limit)
+    except Exception as exc:
+        print(
+            f"[Insights Warning] Could not load latest alert run: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    if not dashboard_data and not department_cards and not latest_alert_run:
+        raise HTTPException(
+            status_code=404,
+            detail="No alert insights found. Run /alerts/run first."
+        )
+
+    insights = insights_service.generate(
+        dashboard_summary=dashboard_data,
+        department_cards=department_cards,
+        latest_alert_run=latest_alert_run,
+        limit=safe_limit,
+    )
+
+    return {
+        "status": "success",
+        "insights": insights
     }
 
 

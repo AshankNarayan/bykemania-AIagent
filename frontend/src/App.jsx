@@ -226,9 +226,7 @@ function getAlertItems(source) {
 function extractVehicleFromMessage(message) {
   const text = String(message || "").trim();
 
-  if (!text) {
-    return "-";
-  }
+  if (!text) return "-";
 
   const match = text.match(/\b[A-Z]{2}\d{2}[A-Z]{1,3}\d{3,5}\b/i);
 
@@ -354,9 +352,7 @@ function DataRequirementCard({ payload }) {
           <h3>{formatLabel(payload?.task_type || "Advanced Analysis")}</h3>
         </div>
 
-        <span className="requirement-pill">
-          Needs More Data
-        </span>
+        <span className="requirement-pill">Needs More Data</span>
       </div>
 
       <p className="requirement-summary">
@@ -409,15 +405,9 @@ function DataRequirementCard({ payload }) {
       </div>
 
       <div className="requirement-grid">
-        <SmallList
-          title="Can Answer Now"
-          items={payload?.can_answer_now}
-        />
+        <SmallList title="Can Answer Now" items={payload?.can_answer_now} />
 
-        <SmallList
-          title="Cannot Answer Yet"
-          items={payload?.cannot_answer_yet}
-        />
+        <SmallList title="Cannot Answer Yet" items={payload?.cannot_answer_yet} />
       </div>
 
       <div className="required-data-section">
@@ -437,10 +427,7 @@ function DataRequirementCard({ payload }) {
         )}
       </div>
 
-      <SmallList
-        title="Suggested Next Steps"
-        items={payload?.suggested_next_steps}
-      />
+      <SmallList title="Suggested Next Steps" items={payload?.suggested_next_steps} />
 
       {payload?.recommended_user_reply ? (
         <div className="recommended-reply-box">
@@ -455,6 +442,209 @@ function DataRequirementCard({ payload }) {
           <JsonBlock data={payload.capability} />
         </details>
       ) : null}
+    </div>
+  );
+}
+
+function TodayInsightsPanel({ insights }) {
+  if (!insights) {
+    return (
+      <EmptyState
+        title="No AI insights loaded"
+        message="Click Generate Insights after loading dashboard data."
+      />
+    );
+  }
+
+  const metrics = insights.metrics || {};
+  const topDepartment = insights.top_risk_department;
+  const topAlertType = insights.top_alert_type;
+
+  const actions = Array.isArray(insights.recommended_actions)
+    ? insights.recommended_actions
+    : [];
+
+  const criticalAlerts = Array.isArray(insights.critical_alerts)
+    ? insights.critical_alerts
+    : [];
+
+  const topAlertTypes = Array.isArray(insights.top_alert_types)
+    ? insights.top_alert_types
+    : [];
+
+  return (
+    <div className="today-insights-panel">
+      <div className="insights-hero">
+        <div>
+          <p className="eyebrow">Today’s AI Insights</p>
+          <h3>Operations Snapshot</h3>
+          <p>{insights.summary}</p>
+        </div>
+
+        <span className="insights-pill">AI Generated</span>
+      </div>
+
+      <div className="metric-grid">
+        <MetricCard
+          title="Total Alerts"
+          value={metrics.total_alerts}
+          subtitle="Current alert volume"
+        />
+
+        <MetricCard
+          title="Critical Alerts"
+          value={metrics.critical_alerts}
+          subtitle="Highest priority"
+        />
+
+        <MetricCard
+          title="High Alerts"
+          value={metrics.high_alerts}
+          subtitle="Needs attention"
+        />
+
+        <MetricCard
+          title="Departments"
+          value={metrics.departments}
+          subtitle="Alert groups"
+        />
+      </div>
+
+      <div className="insights-two-column">
+        <div className="insight-card">
+          <h4>Top Risk Department</h4>
+
+          {topDepartment ? (
+            <>
+              <strong>{topDepartment.department}</strong>
+              <p>
+                {formatValue(topDepartment.total_alerts)} total alerts •{" "}
+                {formatValue(topDepartment.critical)} critical •{" "}
+                {formatValue(topDepartment.high)} high
+              </p>
+            </>
+          ) : (
+            <p>No department ranking available.</p>
+          )}
+        </div>
+
+        <div className="insight-card">
+          <h4>Top Alert Type</h4>
+
+          {topAlertType ? (
+            <>
+              <strong>{formatLabel(topAlertType.alert_type)}</strong>
+              <p>{formatValue(topAlertType.count)} cases detected.</p>
+            </>
+          ) : (
+            <p>No alert type ranking available.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="recommended-actions-section">
+        <h4>Recommended Actions</h4>
+
+        {actions.length ? (
+          <div className="recommended-actions-grid">
+            {actions.map((action, index) => (
+              <div className="recommended-action-card" key={`${action.title}-${index}`}>
+                <div className="action-card-header">
+                  <span
+                    className={`action-priority priority-${String(
+                      action.priority || "medium"
+                    ).toLowerCase()}`}
+                  >
+                    {formatLabel(action.priority || "medium")}
+                  </span>
+                </div>
+
+                <h5>{action.title}</h5>
+                <p>{action.reason}</p>
+                <strong>{action.suggested_action}</strong>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="source-muted">No recommended actions returned.</p>
+        )}
+      </div>
+
+      <div className="insights-two-column">
+        <div className="insight-card">
+          <h4>Top Alert Types</h4>
+
+          {topAlertTypes.length ? (
+            <ul className="simple-list">
+              {topAlertTypes.slice(0, 6).map((item) => (
+                <li key={item.alert_type}>
+                  <span>{formatLabel(item.alert_type)}</span>
+                  <strong>{formatValue(item.count)}</strong>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No alert type data available.</p>
+          )}
+        </div>
+
+        <div className="insight-card">
+          <h4>Data Limitations</h4>
+
+          {Array.isArray(insights.data_limitations) &&
+          insights.data_limitations.length ? (
+            <ul>
+              {insights.data_limitations.map((item, index) => (
+                <li key={`limit-${index}`}>{item}</li>
+              ))}
+            </ul>
+          ) : (
+            <p>No limitations returned.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="critical-alerts-section">
+        <h4>Critical Alerts Sample</h4>
+
+        {criticalAlerts.length ? (
+          <div className="table-wrap">
+            <table className="alert-table">
+              <thead>
+                <tr>
+                  <th>Department</th>
+                  <th>Vehicle</th>
+                  <th>Location</th>
+                  <th>Issue</th>
+                  <th>Recommendation</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {criticalAlerts.map((alert, index) => (
+                  <tr key={`${alert.vehicle}-${index}`}>
+                    <td>{formatValue(alert.department)}</td>
+                    <td>{formatValue(alert.vehicle)}</td>
+                    <td>{formatValue(alert.location)}</td>
+                    <td>{formatValue(alert.message)}</td>
+                    <td>{formatValue(alert.recommendation)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState
+            title="No critical alert sample"
+            message="No critical alerts were returned in the latest sample."
+          />
+        )}
+      </div>
+
+      <details className="raw-details">
+        <summary>View raw insights response</summary>
+        <JsonBlock data={insights} />
+      </details>
     </div>
   );
 }
@@ -806,6 +996,8 @@ function App() {
 
   const [dashboardSummary, setDashboardSummary] = useState(null);
   const [departments, setDepartments] = useState([]);
+  const [todayInsights, setTodayInsights] = useState(null);
+
   const [selectedDepartment, setSelectedDepartment] = useState("");
   const [departmentDetail, setDepartmentDetail] = useState(null);
 
@@ -817,6 +1009,7 @@ function App() {
   const [loading, setLoading] = useState({
     status: false,
     dashboard: false,
+    insights: false,
     chat: false,
     department: false,
     logs: false,
@@ -900,6 +1093,23 @@ function App() {
       setError(err.message);
     } finally {
       setLoading((prev) => ({ ...prev, dashboard: false }));
+    }
+  }
+
+  async function loadTodayInsights() {
+    if (!requireApiKey()) return;
+
+    setLoading((prev) => ({ ...prev, insights: true }));
+    setError("");
+
+    try {
+      const data = await apiGet("/insights/today?limit=10", savedApiKey);
+      setTodayInsights(data.insights || data);
+    } catch (err) {
+      setTodayInsights(null);
+      setError(err.message);
+    } finally {
+      setLoading((prev) => ({ ...prev, insights: false }));
     }
   }
 
@@ -1065,6 +1275,7 @@ function App() {
 
         <nav className="nav-list">
           <a href="#overview">Overview</a>
+          <a href="#insights">AI Insights</a>
           <a href="#dashboard">Dashboard</a>
           <a href="#departments">Departments</a>
           <a href="#chat">Chat</a>
@@ -1119,6 +1330,21 @@ function App() {
               subtitle="Enabled status"
             />
           </div>
+        </section>
+
+        <section id="insights" className="section">
+          <div className="section-header">
+            <div>
+              <p className="eyebrow">Agentic Layer</p>
+              <h2>Today’s AI Insights</h2>
+            </div>
+
+            <button onClick={loadTodayInsights} disabled={loading.insights}>
+              {loading.insights ? "Generating..." : "Generate Insights"}
+            </button>
+          </div>
+
+          <TodayInsightsPanel insights={todayInsights} />
         </section>
 
         <section id="dashboard" className="section">
