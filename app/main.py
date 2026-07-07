@@ -20,6 +20,7 @@ import uvicorn
 from app.agent import BykeManiaAgent
 from app.security.api_key import verify_api_key
 from app.services.alert_engine import AlertEngine
+from app.services.critical_alerts_service import CriticalAlertsService
 from app.services.operations_insights import OperationsInsightsService
 from app.services.scheduler_service import SchedulerService
 from app.storage.alert_repository import AlertRepository
@@ -30,29 +31,15 @@ from app.tools.optimized_api import call_sir_optimized_api_with_metadata
 APP_VERSION = "0.1.5"
 
 
-# In-memory rate limit store.
-# Works well for one Render instance.
-# If you later scale to multiple instances, move this to Redis/PostgreSQL.
 RATE_LIMIT_STORE: dict[str, deque[float]] = defaultdict(deque)
 RATE_LIMIT_LOCK = asyncio.Lock()
 
 
 def get_environment() -> str:
-    """
-    Returns current app environment.
-    Example:
-    - development
-    - production
-    """
-
     return os.getenv("ENVIRONMENT", "development").strip().lower()
 
 
 def is_production() -> bool:
-    """
-    Returns True when app is running in production.
-    """
-
     return get_environment() == "production"
 
 
@@ -62,10 +49,6 @@ def get_env_int(
     minimum: int = 1,
     maximum: int = 600
 ) -> int:
-    """
-    Safely reads integer config values from environment variables.
-    """
-
     try:
         value = int(os.getenv(key, str(default)))
         return max(minimum, min(value, maximum))
@@ -75,10 +58,6 @@ def get_env_int(
 
 
 def get_chat_timeout_seconds() -> int:
-    """
-    Timeout for /chat requests.
-    """
-
     return get_env_int(
         key="CHAT_TIMEOUT_SECONDS",
         default=60,
@@ -88,10 +67,6 @@ def get_chat_timeout_seconds() -> int:
 
 
 def get_alert_run_timeout_seconds() -> int:
-    """
-    Timeout for /alerts/run requests.
-    """
-
     return get_env_int(
         key="ALERT_RUN_TIMEOUT_SECONDS",
         default=120,
@@ -101,10 +76,6 @@ def get_alert_run_timeout_seconds() -> int:
 
 
 def get_scheduler_manual_run_timeout_seconds() -> int:
-    """
-    Timeout for /scheduler/run-now requests.
-    """
-
     return get_env_int(
         key="SCHEDULER_MANUAL_RUN_TIMEOUT_SECONDS",
         default=120,
@@ -114,10 +85,6 @@ def get_scheduler_manual_run_timeout_seconds() -> int:
 
 
 def get_chat_rate_limit_per_minute() -> int:
-    """
-    Max /chat requests per minute per API key/IP.
-    """
-
     return get_env_int(
         key="CHAT_RATE_LIMIT_PER_MINUTE",
         default=30,
@@ -127,10 +94,6 @@ def get_chat_rate_limit_per_minute() -> int:
 
 
 def get_alert_run_rate_limit_per_hour() -> int:
-    """
-    Max /alerts/run requests per hour per API key/IP.
-    """
-
     return get_env_int(
         key="ALERT_RUN_RATE_LIMIT_PER_HOUR",
         default=6,
@@ -140,10 +103,6 @@ def get_alert_run_rate_limit_per_hour() -> int:
 
 
 def get_scheduler_run_rate_limit_per_hour() -> int:
-    """
-    Max /scheduler/run-now requests per hour per API key/IP.
-    """
-
     return get_env_int(
         key="SCHEDULER_RUN_RATE_LIMIT_PER_HOUR",
         default=6,
@@ -153,13 +112,6 @@ def get_scheduler_run_rate_limit_per_hour() -> int:
 
 
 def get_cors_origins() -> list[str]:
-    """
-    Reads allowed CORS origins from environment variable.
-
-    Example:
-    CORS_ORIGINS=http://localhost:3000,https://your-frontend.com
-    """
-
     raw_origins = os.getenv("CORS_ORIGINS", "").strip()
 
     if raw_origins:
@@ -185,10 +137,6 @@ def get_cors_origins() -> list[str]:
 
 
 def get_request_id(request: Request) -> str:
-    """
-    Gets request ID from request state or headers.
-    """
-
     request_id = getattr(request.state, "request_id", None)
 
     if request_id:
@@ -198,12 +146,6 @@ def get_request_id(request: Request) -> str:
 
 
 def get_client_ip(request: Request) -> str:
-    """
-    Gets client IP safely.
-
-    Render/proxies may send x-forwarded-for.
-    """
-
     forwarded_for = request.headers.get("x-forwarded-for")
 
     if forwarded_for:
@@ -216,10 +158,6 @@ def get_client_ip(request: Request) -> str:
 
 
 def get_api_key_hash(request: Request) -> str:
-    """
-    Hashes API key for rate limiting without storing raw API key.
-    """
-
     api_key = request.headers.get("x-api-key", "")
 
     if not api_key:
@@ -229,15 +167,6 @@ def get_api_key_hash(request: Request) -> str:
 
 
 def get_rate_limit_identity(request: Request, scope: str) -> str:
-    """
-    Creates a rate-limit identity using:
-    - endpoint/scope
-    - API key hash
-    - client IP
-
-    Raw API key is never stored.
-    """
-
     return f"{scope}:{get_api_key_hash(request)}:{get_client_ip(request)}"
 
 
@@ -250,14 +179,6 @@ def build_error_response(
     expose_details_in_production: bool = False,
     extra_headers: Optional[dict[str, str]] = None
 ) -> JSONResponse:
-    """
-    Builds a consistent API error response.
-
-    Production behavior:
-    - hides internal details by default
-    - keeps public message and request_id
-    """
-
     request_id = get_request_id(request)
 
     error_data: dict[str, Any] = {
@@ -292,10 +213,6 @@ def build_timeout_response(
     code: str,
     timeout_seconds: int
 ) -> JSONResponse:
-    """
-    Builds a standard timeout response.
-    """
-
     return build_error_response(
         request=request,
         status_code=504,
@@ -314,10 +231,6 @@ def build_rate_limit_response(
     window_seconds: int,
     retry_after_seconds: int
 ) -> JSONResponse:
-    """
-    Builds a standard rate-limit response.
-    """
-
     return build_error_response(
         request=request,
         status_code=429,
@@ -343,14 +256,6 @@ async def check_rate_limit(
     limit: int,
     window_seconds: int
 ) -> Optional[JSONResponse]:
-    """
-    In-memory sliding-window rate limiter.
-
-    Returns:
-    - None if request is allowed
-    - JSONResponse if request is blocked
-    """
-
     now = time.time()
     identity = get_rate_limit_identity(request, scope)
 
@@ -380,17 +285,6 @@ async def check_rate_limit(
 
 
 def get_public_backend_error(api_result: dict[str, Any]) -> dict[str, Any]:
-    """
-    Returns backend API error safely.
-
-    In production:
-    - do not expose raw internal API error text
-    - keep status code only
-
-    In development:
-    - expose raw error for debugging
-    """
-
     safe_error = {
         "api_status_code": api_result.get("status_code")
     }
@@ -405,8 +299,6 @@ app = FastAPI(
     title="BykeMania AI Agent",
     description="Natural Language AI Agent for BykeMania Operations",
     version=APP_VERSION,
-
-    # Keep Swagger/OpenAPI available on Render
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json"
@@ -423,14 +315,6 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_request_metadata(request: Request, call_next):
-    """
-    Adds request tracking metadata.
-
-    Every response receives:
-    - X-Request-ID
-    - X-Process-Time-MS
-    """
-
     request_id = request.headers.get("x-request-id") or str(uuid4())
     request.state.request_id = request_id
 
@@ -494,15 +378,6 @@ async def http_exception_handler(
     request: Request,
     exc: HTTPException
 ):
-    """
-    Standardizes HTTPException responses.
-
-    Example:
-    - 400 empty query
-    - 401/403 invalid API key
-    - 404 not found
-    """
-
     detail = exc.detail
 
     if isinstance(detail, str):
@@ -535,14 +410,6 @@ async def validation_exception_handler(
     request: Request,
     exc: RequestValidationError
 ):
-    """
-    Standardizes validation errors.
-
-    Example:
-    - missing query field in /chat body
-    - wrong JSON type
-    """
-
     details = exc.errors()
 
     return build_error_response(
@@ -555,12 +422,12 @@ async def validation_exception_handler(
     )
 
 
-# Shared service instances
 agent = BykeManiaAgent()
 log_repo = AgentLogRepository()
 alert_engine = AlertEngine()
 alert_repo = AlertRepository()
 insights_service = OperationsInsightsService()
+critical_alerts_service = CriticalAlertsService()
 scheduler_service = SchedulerService(
     alert_engine=alert_engine,
     alert_repo=alert_repo
@@ -572,14 +439,6 @@ class ChatRequest(BaseModel):
 
 
 def get_alert_run_cooldown_minutes() -> int:
-    """
-    Reads cooldown value from environment variables.
-
-    If ALERT_RUN_COOLDOWN_MINUTES=30,
-    then the system avoids saving another alert run within 30 minutes
-    unless force=true.
-    """
-
     try:
         return max(0, int(os.getenv("ALERT_RUN_COOLDOWN_MINUTES", "30")))
     except Exception:
@@ -588,44 +447,23 @@ def get_alert_run_cooldown_minutes() -> int:
 
 @app.on_event("startup")
 async def startup_event():
-    """
-    Starts scheduler when FastAPI starts, only if enabled in environment variables.
-    """
-
     scheduler_status = scheduler_service.start()
     print("[Scheduler Startup]", scheduler_status)
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """
-    Stops scheduler when FastAPI shuts down.
-    """
-
     scheduler_status = scheduler_service.shutdown()
     print("[Scheduler Shutdown]", scheduler_status)
 
 
 @app.head("/")
 async def root_head():
-    """
-    Lightweight HEAD endpoint for platform health checks.
-
-    This prevents Render from showing:
-    HEAD / 405 Method Not Allowed
-    """
-
     return Response(status_code=200)
 
 
 @app.get("/")
 async def root():
-    """
-    Public health/info endpoint.
-
-    This endpoint is intentionally not API-key protected.
-    """
-
     return {
         "message": "BykeMania AI Agent is running 🚀",
         "status": "healthy",
@@ -665,6 +503,7 @@ async def root():
             "dashboard_department_detail": "GET /dashboard/department/{department_name}",
 
             "todays_ai_insights": "GET /insights/today",
+            "critical_alerts": "GET /insights/critical-alerts",
 
             "scheduler_status": "GET /scheduler/status",
             "scheduler_run_now": "POST /scheduler/run-now",
@@ -675,12 +514,6 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """
-    Lightweight public health check.
-
-    Use this for uptime checks and Render health checks.
-    """
-
     return {
         "status": "healthy",
         "service": "bykemania-agent-api",
@@ -691,13 +524,6 @@ async def health():
 
 @app.get("/ready")
 async def ready(request: Request):
-    """
-    Readiness check.
-
-    This confirms that core repositories can initialize.
-    It does not call the private fleet backend.
-    """
-
     try:
         log_repo.get_recent_logs(limit=1)
 
@@ -738,12 +564,6 @@ async def chat(
     request: Request,
     chat_request: ChatRequest
 ):
-    """
-    Main chat endpoint.
-
-    Protected by x-api-key.
-    """
-
     rate_limit_response = await check_rate_limit(
         request=request,
         scope="chat",
@@ -804,10 +624,6 @@ async def run_alert_check(
     include_inactive: bool = False,
     force: bool = False
 ):
-    """
-    Runs alert checking on current fleet data and saves the alert run.
-    """
-
     rate_limit_response = await check_rate_limit(
         request=request,
         scope="alerts_run",
@@ -910,10 +726,6 @@ async def run_alert_check(
     dependencies=[Depends(verify_api_key)]
 )
 async def get_alert_history(limit: int = 10):
-    """
-    Returns recent alert scan history.
-    """
-
     safe_limit = max(1, min(limit, 100))
 
     history = alert_repo.get_recent_alert_runs(limit=safe_limit)
@@ -934,10 +746,6 @@ async def get_latest_alert_run(
     department: Optional[str] = None,
     severity: Optional[str] = None
 ):
-    """
-    Returns the latest saved alert run with limited alert items.
-    """
-
     safe_limit = max(1, min(limit, 500))
 
     latest = alert_repo.get_latest_alert_run(
@@ -968,10 +776,6 @@ async def get_alert_run_details(
     department: Optional[str] = None,
     severity: Optional[str] = None
 ):
-    """
-    Returns one saved alert run with limited alert items.
-    """
-
     safe_limit = max(1, min(limit, 500))
 
     alert_run = alert_repo.get_alert_run_by_id(
@@ -998,10 +802,6 @@ async def get_alert_run_details(
     dependencies=[Depends(verify_api_key)]
 )
 async def dashboard_summary():
-    """
-    Dashboard home summary.
-    """
-
     summary = alert_repo.get_dashboard_summary()
 
     if not summary:
@@ -1021,10 +821,6 @@ async def dashboard_summary():
     dependencies=[Depends(verify_api_key)]
 )
 async def dashboard_departments(run_id: Optional[str] = None):
-    """
-    Returns department-wise alert cards.
-    """
-
     cards = alert_repo.get_department_cards(run_id=run_id)
 
     return {
@@ -1044,10 +840,6 @@ async def dashboard_department_detail(
     limit: int = 50,
     severity: Optional[str] = None
 ):
-    """
-    Returns department-specific dashboard data.
-    """
-
     safe_limit = max(1, min(limit, 500))
 
     data = alert_repo.get_department_dashboard(
@@ -1074,13 +866,6 @@ async def dashboard_department_detail(
     dependencies=[Depends(verify_api_key)]
 )
 async def todays_ai_insights(limit: int = 10):
-    """
-    Returns today's AI-generated operational insights.
-
-    Uses existing alert/dashboard data only.
-    Does not require additional APIs.
-    """
-
     safe_limit = max(1, min(limit, 50))
 
     dashboard_data = None
@@ -1131,14 +916,46 @@ async def todays_ai_insights(limit: int = 10):
 
 
 @app.get(
+    "/insights/critical-alerts",
+    dependencies=[Depends(verify_api_key)]
+)
+async def critical_alerts_insights(limit: int = 25):
+    safe_limit = max(1, min(limit, 100))
+
+    try:
+        latest_alert_run = alert_repo.get_latest_alert_run(
+            limit=safe_limit,
+            severity="critical"
+        )
+    except Exception as exc:
+        print(
+            f"[Critical Alerts Warning] Could not load latest critical alerts: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        latest_alert_run = None
+
+    if not latest_alert_run:
+        raise HTTPException(
+            status_code=404,
+            detail="No critical alerts found. Run /alerts/run first."
+        )
+
+    critical_alerts = critical_alerts_service.generate(
+        latest_alert_run=latest_alert_run,
+        limit=safe_limit
+    )
+
+    return {
+        "status": "success",
+        "critical_alerts": critical_alerts
+    }
+
+
+@app.get(
     "/scheduler/status",
     dependencies=[Depends(verify_api_key)]
 )
 async def scheduler_status():
-    """
-    Returns scheduler status.
-    """
-
     return {
         "status": "success",
         "scheduler": scheduler_service.get_status()
@@ -1153,10 +970,6 @@ async def scheduler_run_now(
     request: Request,
     force: bool = False
 ):
-    """
-    Manually triggers the same alert check used by the scheduler.
-    """
-
     rate_limit_response = await check_rate_limit(
         request=request,
         scope="scheduler_run_now",
@@ -1194,10 +1007,6 @@ async def scheduler_run_now(
     dependencies=[Depends(verify_api_key)]
 )
 async def get_recent_logs(limit: int = 10):
-    """
-    Returns recent query logs.
-    """
-
     safe_limit = max(1, min(limit, 50))
 
     logs = log_repo.get_recent_logs(limit=safe_limit)
@@ -1213,10 +1022,6 @@ async def get_recent_logs(limit: int = 10):
     dependencies=[Depends(verify_api_key)]
 )
 async def get_log_by_request_id(request_id: str):
-    """
-    Returns full details of one logged query.
-    """
-
     log = log_repo.get_log_by_request_id(request_id)
 
     if not log:

@@ -1093,3 +1093,45 @@ summary {
     flex-direction: column;
   }
 }
+.critical-alerts-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.critical-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.2rem;
+  border-radius: 1.1rem;
+  background: linear-gradient(135deg, #fff1f3, #ffffff);
+  border: 1px solid #fda29b;
+}
+
+.critical-hero h3 {
+  margin: 0.1rem 0 0.5rem;
+  color: #101828;
+}
+
+.critical-hero p {
+  margin: 0;
+  color: #344054;
+  line-height: 1.55;
+}
+
+.critical-pill {
+  flex-shrink: 0;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  background: #fee4e2;
+  color: #b42318;
+  font-size: 0.75rem;
+  font-weight: 900;
+}
+
+@media (max-width: 900px) {
+  .critical-hero {
+    flex-direction: column;
+  }
+}

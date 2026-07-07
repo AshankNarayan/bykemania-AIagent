@@ -406,7 +406,6 @@ function DataRequirementCard({ payload }) {
 
       <div className="requirement-grid">
         <SmallList title="Can Answer Now" items={payload?.can_answer_now} />
-
         <SmallList title="Cannot Answer Yet" items={payload?.cannot_answer_yet} />
       </div>
 
@@ -442,6 +441,177 @@ function DataRequirementCard({ payload }) {
           <JsonBlock data={payload.capability} />
         </details>
       ) : null}
+    </div>
+  );
+}
+
+function CriticalAlertsPanel({ data }) {
+  if (!data) {
+    return (
+      <EmptyState
+        title="No critical alerts loaded"
+        message="Click Load Critical Alerts to see urgent operational issues."
+      />
+    );
+  }
+
+  const alerts = Array.isArray(data.critical_alerts) ? data.critical_alerts : [];
+  const departments = Array.isArray(data.department_breakdown)
+    ? data.department_breakdown
+    : [];
+  const alertTypes = Array.isArray(data.alert_type_breakdown)
+    ? data.alert_type_breakdown
+    : [];
+  const actions = Array.isArray(data.recommended_actions)
+    ? data.recommended_actions
+    : [];
+
+  return (
+    <div className="critical-alerts-panel">
+      <div className="critical-hero">
+        <div>
+          <p className="eyebrow">Critical Alerts</p>
+          <h3>Urgent Operations Review</h3>
+          <p>{data.summary}</p>
+        </div>
+
+        <span className="critical-pill">
+          {formatValue(data.total_critical_alerts)} Critical
+        </span>
+      </div>
+
+      <div className="metric-grid">
+        <MetricCard
+          title="Critical Alerts"
+          value={data.total_critical_alerts}
+          subtitle="Latest saved run"
+        />
+
+        <MetricCard
+          title="Returned"
+          value={data.returned_alerts}
+          subtitle="Shown in table"
+        />
+
+        <MetricCard
+          title="Departments"
+          value={departments.length}
+          subtitle="Affected teams"
+        />
+
+        <MetricCard
+          title="Alert Types"
+          value={alertTypes.length}
+          subtitle="Critical issue categories"
+        />
+      </div>
+
+      <div className="insights-two-column">
+        <div className="insight-card">
+          <h4>Department Breakdown</h4>
+
+          {departments.length ? (
+            <ul className="simple-list">
+              {departments.slice(0, 6).map((item) => (
+                <li key={item.department}>
+                  <span>{formatLabel(item.department)}</span>
+                  <strong>{formatValue(item.count)}</strong>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No department breakdown available.</p>
+          )}
+        </div>
+
+        <div className="insight-card">
+          <h4>Alert Type Breakdown</h4>
+
+          {alertTypes.length ? (
+            <ul className="simple-list">
+              {alertTypes.slice(0, 6).map((item) => (
+                <li key={item.alert_type}>
+                  <span>{formatLabel(item.alert_type)}</span>
+                  <strong>{formatValue(item.count)}</strong>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No alert type breakdown available.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="recommended-actions-section">
+        <h4>Critical Recommended Actions</h4>
+
+        {actions.length ? (
+          <div className="recommended-actions-grid">
+            {actions.map((action, index) => (
+              <div className="recommended-action-card" key={`${action.title}-${index}`}>
+                <div className="action-card-header">
+                  <span
+                    className={`action-priority priority-${String(
+                      action.priority || "high"
+                    ).toLowerCase()}`}
+                  >
+                    {formatLabel(action.priority || "high")}
+                  </span>
+                </div>
+
+                <h5>{action.title}</h5>
+                <strong>{action.action}</strong>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="source-muted">No recommended actions returned.</p>
+        )}
+      </div>
+
+      <div className="critical-alerts-section">
+        <h4>Critical Alert Items</h4>
+
+        {alerts.length ? (
+          <div className="table-wrap">
+            <table className="alert-table">
+              <thead>
+                <tr>
+                  <th>Department</th>
+                  <th>Type</th>
+                  <th>Vehicle</th>
+                  <th>Location</th>
+                  <th>Issue</th>
+                  <th>Recommendation</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {alerts.map((alert, index) => (
+                  <tr key={`${alert.vehicle}-${alert.alert_type}-${index}`}>
+                    <td>{formatValue(alert.department)}</td>
+                    <td>{formatLabel(alert.alert_type)}</td>
+                    <td>{formatValue(alert.vehicle)}</td>
+                    <td>{formatValue(alert.location)}</td>
+                    <td>{formatValue(alert.message)}</td>
+                    <td>{formatValue(alert.recommendation)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState
+            title="No critical items returned"
+            message="No critical rows were available in the latest saved run."
+          />
+        )}
+      </div>
+
+      <details className="raw-details">
+        <summary>View raw critical alerts response</summary>
+        <JsonBlock data={data} />
+      </details>
     </div>
   );
 }
@@ -997,6 +1167,7 @@ function App() {
   const [dashboardSummary, setDashboardSummary] = useState(null);
   const [departments, setDepartments] = useState([]);
   const [todayInsights, setTodayInsights] = useState(null);
+  const [criticalAlerts, setCriticalAlerts] = useState(null);
 
   const [selectedDepartment, setSelectedDepartment] = useState("");
   const [departmentDetail, setDepartmentDetail] = useState(null);
@@ -1010,6 +1181,7 @@ function App() {
     status: false,
     dashboard: false,
     insights: false,
+    criticalAlerts: false,
     chat: false,
     department: false,
     logs: false,
@@ -1110,6 +1282,23 @@ function App() {
       setError(err.message);
     } finally {
       setLoading((prev) => ({ ...prev, insights: false }));
+    }
+  }
+
+  async function loadCriticalAlerts() {
+    if (!requireApiKey()) return;
+
+    setLoading((prev) => ({ ...prev, criticalAlerts: true }));
+    setError("");
+
+    try {
+      const data = await apiGet("/insights/critical-alerts?limit=25", savedApiKey);
+      setCriticalAlerts(data.critical_alerts || data);
+    } catch (err) {
+      setCriticalAlerts(null);
+      setError(err.message);
+    } finally {
+      setLoading((prev) => ({ ...prev, criticalAlerts: false }));
     }
   }
 
@@ -1276,6 +1465,7 @@ function App() {
         <nav className="nav-list">
           <a href="#overview">Overview</a>
           <a href="#insights">AI Insights</a>
+          <a href="#critical-alerts">Critical Alerts</a>
           <a href="#dashboard">Dashboard</a>
           <a href="#departments">Departments</a>
           <a href="#chat">Chat</a>
@@ -1345,6 +1535,21 @@ function App() {
           </div>
 
           <TodayInsightsPanel insights={todayInsights} />
+        </section>
+
+        <section id="critical-alerts" className="section">
+          <div className="section-header">
+            <div>
+              <p className="eyebrow">Priority Review</p>
+              <h2>Critical Alerts</h2>
+            </div>
+
+            <button onClick={loadCriticalAlerts} disabled={loading.criticalAlerts}>
+              {loading.criticalAlerts ? "Loading..." : "Load Critical Alerts"}
+            </button>
+          </div>
+
+          <CriticalAlertsPanel data={criticalAlerts} />
         </section>
 
         <section id="dashboard" className="section">
