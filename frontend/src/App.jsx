@@ -66,6 +66,13 @@ function formatValue(value) {
   return String(value);
 }
 
+function formatLabel(value) {
+  return String(value || "-")
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
 function compactText(value, maxLength = 30) {
   const text = formatValue(value);
 
@@ -104,6 +111,12 @@ function pick(source, keys, fallback = undefined) {
   }
 
   return fallback;
+}
+
+function getResponsePayload(raw) {
+  if (!raw) return null;
+
+  return raw.response || raw.data?.response || raw;
 }
 
 function getDashboardPayload(dashboardSummary) {
@@ -256,6 +269,193 @@ function MessageText({ text }) {
         return <span key={index}>{part}</span>;
       })}
     </p>
+  );
+}
+
+function SmallList({ title, items, emptyText = "No items returned." }) {
+  const safeItems = Array.isArray(items) ? items : [];
+
+  return (
+    <div className="requirement-list-card">
+      <h4>{title}</h4>
+
+      {safeItems.length ? (
+        <ul>
+          {safeItems.map((item, index) => (
+            <li key={`${title}-${index}`}>{formatValue(item)}</li>
+          ))}
+        </ul>
+      ) : (
+        <p>{emptyText}</p>
+      )}
+    </div>
+  );
+}
+
+function SourceBadge({ source, variant = "neutral" }) {
+  return (
+    <span className={`source-badge source-${variant}`}>
+      {formatLabel(source)}
+    </span>
+  );
+}
+
+function RequiredDataCard({ data }) {
+  const fields = Array.isArray(data?.minimum_fields) ? data.minimum_fields : [];
+
+  return (
+    <div className="required-data-card">
+      <div>
+        <h4>{data?.name || "Required Data"}</h4>
+        <p>{data?.description || "No description provided."}</p>
+      </div>
+
+      {data?.source_key ? (
+        <SourceBadge source={data.source_key} variant="required" />
+      ) : null}
+
+      <div className="field-chip-row">
+        {fields.length ? (
+          fields.map((field, index) => (
+            <span className="field-chip" key={`${data?.name}-${field}-${index}`}>
+              {field}
+            </span>
+          ))
+        ) : (
+          <span className="field-chip">No field list returned</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DataRequirementCard({ payload }) {
+  const requiredData = Array.isArray(payload?.required_data)
+    ? payload.required_data
+    : [];
+
+  const missingSources = Array.isArray(payload?.missing_data_sources)
+    ? payload.missing_data_sources
+    : [];
+
+  const availableSources = Array.isArray(payload?.available_data_sources)
+    ? payload.available_data_sources
+    : [];
+
+  const requiredSources = Array.isArray(payload?.required_data_sources)
+    ? payload.required_data_sources
+    : [];
+
+  return (
+    <div className="data-requirement-card">
+      <div className="requirement-header">
+        <div>
+          <p className="eyebrow">Advanced Task Detected</p>
+          <h3>{formatLabel(payload?.task_type || "Advanced Analysis")}</h3>
+        </div>
+
+        <span className="requirement-pill">
+          Needs More Data
+        </span>
+      </div>
+
+      <p className="requirement-summary">
+        {payload?.summary ||
+          "This task needs additional historical or business data before it can be answered accurately."}
+      </p>
+
+      <div className="source-section">
+        <div>
+          <h4>Missing Data Sources</h4>
+
+          <div className="source-badge-row">
+            {missingSources.length ? (
+              missingSources.map((source) => (
+                <SourceBadge key={source} source={source} variant="missing" />
+              ))
+            ) : (
+              <span className="source-muted">No missing source list returned.</span>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <h4>Available Data Sources</h4>
+
+          <div className="source-badge-row">
+            {availableSources.length ? (
+              availableSources.map((source) => (
+                <SourceBadge key={source} source={source} variant="available" />
+              ))
+            ) : (
+              <span className="source-muted">No available source list returned.</span>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <h4>Required Data Sources</h4>
+
+          <div className="source-badge-row">
+            {requiredSources.length ? (
+              requiredSources.map((source) => (
+                <SourceBadge key={source} source={source} variant="required" />
+              ))
+            ) : (
+              <span className="source-muted">No required source list returned.</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="requirement-grid">
+        <SmallList
+          title="Can Answer Now"
+          items={payload?.can_answer_now}
+        />
+
+        <SmallList
+          title="Cannot Answer Yet"
+          items={payload?.cannot_answer_yet}
+        />
+      </div>
+
+      <div className="required-data-section">
+        <h4>Required Fields From Sir / Backend</h4>
+
+        {requiredData.length ? (
+          <div className="required-data-grid">
+            {requiredData.map((data, index) => (
+              <RequiredDataCard
+                key={`${data?.name || "required"}-${index}`}
+                data={data}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="source-muted">No required field contract returned.</p>
+        )}
+      </div>
+
+      <SmallList
+        title="Suggested Next Steps"
+        items={payload?.suggested_next_steps}
+      />
+
+      {payload?.recommended_user_reply ? (
+        <div className="recommended-reply-box">
+          <h4>Message to Ask for Data</h4>
+          <p>{payload.recommended_user_reply}</p>
+        </div>
+      ) : null}
+
+      {payload?.capability ? (
+        <details className="raw-details">
+          <summary>View capability router output</summary>
+          <JsonBlock data={payload.capability} />
+        </details>
+      ) : null}
+    </div>
   );
 }
 
@@ -777,7 +977,10 @@ function App() {
         savedApiKey
       );
 
+      const payload = getResponsePayload(data);
+
       const responseText =
+        payload?.summary ||
         data?.response?.summary ||
         data?.response?.message ||
         JSON.stringify(data?.response || data, null, 2);
@@ -997,26 +1200,37 @@ function App() {
 
           <div className="chat-window">
             {chatMessages.length ? (
-              chatMessages.map((message, index) => (
-                <div
-                  key={`${message.role}-${index}`}
-                  className={`chat-message ${message.role}`}
-                >
-                  <div className="chat-meta">
-                    <strong>{message.role === "user" ? "You" : "Assistant"}</strong>
-                    <span>{message.timestamp}</span>
+              chatMessages.map((message, index) => {
+                const payload = getResponsePayload(message.raw);
+                const isDataRequirement =
+                  message.role === "assistant" &&
+                  payload?.answer_type === "data_requirement";
+
+                return (
+                  <div
+                    key={`${message.role}-${index}`}
+                    className={`chat-message ${message.role}`}
+                  >
+                    <div className="chat-meta">
+                      <strong>{message.role === "user" ? "You" : "Assistant"}</strong>
+                      <span>{message.timestamp}</span>
+                    </div>
+
+                    {isDataRequirement ? (
+                      <DataRequirementCard payload={payload} />
+                    ) : (
+                      <MessageText text={message.text} />
+                    )}
+
+                    {message.raw ? (
+                      <details>
+                        <summary>Raw response</summary>
+                        <JsonBlock data={message.raw} />
+                      </details>
+                    ) : null}
                   </div>
-
-                  <MessageText text={message.text} />
-
-                  {message.raw ? (
-                    <details>
-                      <summary>Raw response</summary>
-                      <JsonBlock data={message.raw} />
-                    </details>
-                  ) : null}
-                </div>
-              ))
+                );
+              })
             ) : (
               <EmptyState
                 title="No chat yet"

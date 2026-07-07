@@ -721,3 +721,197 @@ summary {
     grid-template-columns: 1fr;
   }
 }
+.data-requirement-card {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid #fedf89;
+  border-radius: 1rem;
+  background: #fffbeb;
+}
+
+.requirement-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.requirement-header h3 {
+  margin: 0.1rem 0 0;
+  color: #101828;
+}
+
+.requirement-pill {
+  flex-shrink: 0;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  background: #fef0c7;
+  color: #b54708;
+  font-size: 0.75rem;
+  font-weight: 900;
+}
+
+.requirement-summary {
+  margin: 0;
+  color: #344054;
+  line-height: 1.55;
+}
+
+.source-section {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border-radius: 1rem;
+  background: #ffffff;
+  border: 1px solid #fde68a;
+}
+
+.source-section h4,
+.requirement-list-card h4,
+.required-data-section h4,
+.required-data-card h4,
+.recommended-reply-box h4 {
+  margin: 0 0 0.45rem;
+  color: #101828;
+}
+
+.source-badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 900;
+}
+
+.source-missing {
+  background: #fee4e2;
+  color: #b42318;
+}
+
+.source-available {
+  background: #dcfae6;
+  color: #067647;
+}
+
+.source-required {
+  background: #d1e9ff;
+  color: #175cd3;
+}
+
+.source-neutral {
+  background: #eef2ff;
+  color: #3538cd;
+}
+
+.source-muted {
+  color: #667085;
+  font-size: 0.85rem;
+}
+
+.requirement-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.requirement-list-card {
+  padding: 1rem;
+  border-radius: 1rem;
+  background: #ffffff;
+  border: 1px solid #e4e7ec;
+}
+
+.requirement-list-card ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: #344054;
+}
+
+.requirement-list-card li {
+  margin-bottom: 0.35rem;
+}
+
+.requirement-list-card p {
+  margin: 0;
+  color: #667085;
+}
+
+.required-data-section {
+  padding: 1rem;
+  border-radius: 1rem;
+  background: #ffffff;
+  border: 1px solid #e4e7ec;
+}
+
+.required-data-grid {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.required-data-card {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-radius: 1rem;
+  background: #f8fafc;
+  border: 1px solid #e4e7ec;
+}
+
+.required-data-card p {
+  margin: 0;
+  color: #667085;
+  line-height: 1.45;
+}
+
+.field-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.field-chip {
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #d0d5dd;
+  color: #344054;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.recommended-reply-box {
+  padding: 1rem;
+  border-radius: 1rem;
+  background: #ffffff;
+  border: 1px solid #fedf89;
+}
+
+.recommended-reply-box p {
+  margin: 0;
+  color: #344054;
+  line-height: 1.55;
+}
+
+.chat-message.assistant .data-requirement-card {
+  margin-top: 0.2rem;
+}
+
+@media (max-width: 900px) {
+  .requirement-header,
+  .requirement-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .requirement-header {
+    flex-direction: column;
+  }
+}
