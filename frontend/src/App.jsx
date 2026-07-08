@@ -445,6 +445,195 @@ function DataRequirementCard({ payload }) {
   );
 }
 
+function RecommendedActionsPanel({ data }) {
+  if (!data) {
+    return (
+      <EmptyState
+        title="No recommended actions loaded"
+        message="Click Generate Actions to convert latest alerts into operational next steps."
+      />
+    );
+  }
+
+  const actions = Array.isArray(data.recommended_actions)
+    ? data.recommended_actions
+    : [];
+
+  const owners = Array.isArray(data.owner_breakdown)
+    ? data.owner_breakdown
+    : [];
+
+  const departments = Array.isArray(data.department_breakdown)
+    ? data.department_breakdown
+    : [];
+
+  const actionTypes = Array.isArray(data.action_type_breakdown)
+    ? data.action_type_breakdown
+    : [];
+
+  return (
+    <div className="recommended-actions-panel">
+      <div className="actions-hero">
+        <div>
+          <p className="eyebrow">Recommended Actions Engine</p>
+          <h3>Operational Next Steps</h3>
+          <p>{data.summary}</p>
+        </div>
+
+        <span className="actions-pill">
+          {formatValue(data.total_actions)} Actions
+        </span>
+      </div>
+
+      <div className="metric-grid">
+        <MetricCard
+          title="Total Actions"
+          value={data.total_actions}
+          subtitle="Generated from alerts"
+        />
+
+        <MetricCard
+          title="Returned"
+          value={data.returned_actions}
+          subtitle="Shown below"
+        />
+
+        <MetricCard
+          title="Owners"
+          value={owners.length}
+          subtitle="Responsible teams"
+        />
+
+        <MetricCard
+          title="Action Types"
+          value={actionTypes.length}
+          subtitle="Work categories"
+        />
+      </div>
+
+      <div className="insights-two-column">
+        <div className="insight-card">
+          <h4>Owner Breakdown</h4>
+
+          {owners.length ? (
+            <ul className="simple-list">
+              {owners.slice(0, 6).map((item) => (
+                <li key={item.owner}>
+                  <span>{formatLabel(item.owner)}</span>
+                  <strong>{formatValue(item.count)}</strong>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No owner breakdown available.</p>
+          )}
+        </div>
+
+        <div className="insight-card">
+          <h4>Department Breakdown</h4>
+
+          {departments.length ? (
+            <ul className="simple-list">
+              {departments.slice(0, 6).map((item) => (
+                <li key={item.department}>
+                  <span>{formatLabel(item.department)}</span>
+                  <strong>{formatValue(item.count)}</strong>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No department breakdown available.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="insight-card">
+        <h4>Action Type Breakdown</h4>
+
+        {actionTypes.length ? (
+          <ul className="simple-list">
+            {actionTypes.slice(0, 8).map((item) => (
+              <li key={item.action_type}>
+                <span>{formatLabel(item.action_type)}</span>
+                <strong>{formatValue(item.count)}</strong>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>No action type breakdown available.</p>
+        )}
+      </div>
+
+      <div className="recommended-actions-section">
+        <h4>Action Cards</h4>
+
+        {actions.length ? (
+          <div className="recommended-actions-grid">
+            {actions.map((action, index) => (
+              <div
+                className="recommended-action-card"
+                key={`${action.vehicle}-${action.action_type}-${index}`}
+              >
+                <div className="action-card-header">
+                  <span
+                    className={`action-priority priority-${String(
+                      action.priority || "medium"
+                    ).toLowerCase()}`}
+                  >
+                    {formatLabel(action.priority || "medium")}
+                  </span>
+                </div>
+
+                <h5>{action.title}</h5>
+
+                <p>
+                  <strong>Owner:</strong> {formatValue(action.owner)}
+                </p>
+
+                <p>
+                  <strong>Vehicle:</strong> {formatValue(action.vehicle)} •{" "}
+                  <strong>Location:</strong> {formatValue(action.location)}
+                </p>
+
+                <p>
+                  <strong>Department:</strong> {formatValue(action.department)} •{" "}
+                  <strong>Type:</strong> {formatLabel(action.alert_type)}
+                </p>
+
+                <p>
+                  <strong>Reason:</strong> {formatValue(action.reason)}
+                </p>
+
+                <strong>{formatValue(action.suggested_action)}</strong>
+
+                <div className="execution-note">
+                  {action.can_execute_now
+                    ? "Executable now"
+                    : "Recommendation only — write APIs not connected"}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="source-muted">No action cards returned.</p>
+        )}
+      </div>
+
+      {data.execution_mode ? (
+        <div className="execution-mode-box">
+          <h4>Execution Mode</h4>
+          <p>{data.execution_mode.reason}</p>
+        </div>
+      ) : null}
+
+      <details className="raw-details">
+        <summary>View raw recommended actions response</summary>
+        <JsonBlock data={data} />
+      </details>
+    </div>
+  );
+}
+
 function CriticalAlertsPanel({ data }) {
   if (!data) {
     return (
@@ -1168,6 +1357,7 @@ function App() {
   const [departments, setDepartments] = useState([]);
   const [todayInsights, setTodayInsights] = useState(null);
   const [criticalAlerts, setCriticalAlerts] = useState(null);
+  const [recommendedActions, setRecommendedActions] = useState(null);
 
   const [selectedDepartment, setSelectedDepartment] = useState("");
   const [departmentDetail, setDepartmentDetail] = useState(null);
@@ -1182,6 +1372,7 @@ function App() {
     dashboard: false,
     insights: false,
     criticalAlerts: false,
+    recommendedActions: false,
     chat: false,
     department: false,
     logs: false,
@@ -1299,6 +1490,23 @@ function App() {
       setError(err.message);
     } finally {
       setLoading((prev) => ({ ...prev, criticalAlerts: false }));
+    }
+  }
+
+  async function loadRecommendedActions() {
+    if (!requireApiKey()) return;
+
+    setLoading((prev) => ({ ...prev, recommendedActions: true }));
+    setError("");
+
+    try {
+      const data = await apiGet("/insights/recommended-actions?limit=25", savedApiKey);
+      setRecommendedActions(data.recommended_actions || data);
+    } catch (err) {
+      setRecommendedActions(null);
+      setError(err.message);
+    } finally {
+      setLoading((prev) => ({ ...prev, recommendedActions: false }));
     }
   }
 
@@ -1466,6 +1674,7 @@ function App() {
           <a href="#overview">Overview</a>
           <a href="#insights">AI Insights</a>
           <a href="#critical-alerts">Critical Alerts</a>
+          <a href="#recommended-actions">Recommended Actions</a>
           <a href="#dashboard">Dashboard</a>
           <a href="#departments">Departments</a>
           <a href="#chat">Chat</a>
@@ -1550,6 +1759,24 @@ function App() {
           </div>
 
           <CriticalAlertsPanel data={criticalAlerts} />
+        </section>
+
+        <section id="recommended-actions" className="section">
+          <div className="section-header">
+            <div>
+              <p className="eyebrow">Agentic Recommendations</p>
+              <h2>Recommended Actions</h2>
+            </div>
+
+            <button
+              onClick={loadRecommendedActions}
+              disabled={loading.recommendedActions}
+            >
+              {loading.recommendedActions ? "Generating..." : "Generate Actions"}
+            </button>
+          </div>
+
+          <RecommendedActionsPanel data={recommendedActions} />
         </section>
 
         <section id="dashboard" className="section">

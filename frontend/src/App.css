@@ -1135,3 +1135,73 @@ summary {
     flex-direction: column;
   }
 }
+.recommended-actions-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.actions-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.2rem;
+  border-radius: 1.1rem;
+  background: linear-gradient(135deg, #eef4ff, #ffffff);
+  border: 1px solid #b2ddff;
+}
+
+.actions-hero h3 {
+  margin: 0.1rem 0 0.5rem;
+  color: #101828;
+}
+
+.actions-hero p {
+  margin: 0;
+  color: #344054;
+  line-height: 1.55;
+}
+
+.actions-pill {
+  flex-shrink: 0;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  background: #d1e9ff;
+  color: #175cd3;
+  font-size: 0.75rem;
+  font-weight: 900;
+}
+
+.execution-note {
+  margin-top: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 0.75rem;
+  background: #fffaeb;
+  color: #b54708;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.execution-mode-box {
+  padding: 1rem;
+  border-radius: 1rem;
+  background: #fffaeb;
+  border: 1px solid #fedf89;
+}
+
+.execution-mode-box h4 {
+  margin: 0 0 0.45rem;
+  color: #101828;
+}
+
+.execution-mode-box p {
+  margin: 0;
+  color: #344054;
+  line-height: 1.55;
+}
+
+@media (max-width: 900px) {
+  .actions-hero {
+    flex-direction: column;
+  }
+}

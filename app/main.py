@@ -22,6 +22,7 @@ from app.security.api_key import verify_api_key
 from app.services.alert_engine import AlertEngine
 from app.services.critical_alerts_service import CriticalAlertsService
 from app.services.operations_insights import OperationsInsightsService
+from app.services.recommended_action_engine import RecommendedActionEngine
 from app.services.scheduler_service import SchedulerService
 from app.storage.alert_repository import AlertRepository
 from app.storage.log_repository import AgentLogRepository
@@ -428,6 +429,7 @@ alert_engine = AlertEngine()
 alert_repo = AlertRepository()
 insights_service = OperationsInsightsService()
 critical_alerts_service = CriticalAlertsService()
+recommended_action_engine = RecommendedActionEngine()
 scheduler_service = SchedulerService(
     alert_engine=alert_engine,
     alert_repo=alert_repo
@@ -504,6 +506,7 @@ async def root():
 
             "todays_ai_insights": "GET /insights/today",
             "critical_alerts": "GET /insights/critical-alerts",
+            "recommended_actions": "GET /insights/recommended-actions",
 
             "scheduler_status": "GET /scheduler/status",
             "scheduler_run_now": "POST /scheduler/run-now",
@@ -948,6 +951,49 @@ async def critical_alerts_insights(limit: int = 25):
     return {
         "status": "success",
         "critical_alerts": critical_alerts
+    }
+
+
+@app.get(
+    "/insights/recommended-actions",
+    dependencies=[Depends(verify_api_key)]
+)
+async def recommended_actions_insights(
+    limit: int = 25,
+    department: Optional[str] = None,
+    severity: Optional[str] = None
+):
+    safe_limit = max(1, min(limit, 100))
+
+    try:
+        latest_alert_run = alert_repo.get_latest_alert_run(
+            limit=safe_limit,
+            department=department,
+            severity=severity
+        )
+    except Exception as exc:
+        print(
+            f"[Recommended Actions Warning] Could not load latest alerts: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        latest_alert_run = None
+
+    if not latest_alert_run:
+        raise HTTPException(
+            status_code=404,
+            detail="No alert data found. Run /alerts/run first."
+        )
+
+    actions = recommended_action_engine.generate(
+        latest_alert_run=latest_alert_run,
+        limit=safe_limit,
+        department=department,
+        severity=severity
+    )
+
+    return {
+        "status": "success",
+        "recommended_actions": actions
     }
 
 
