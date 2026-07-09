@@ -243,6 +243,227 @@ function extractVehicleFromMessage(message) {
   return "-";
 }
 
+
+function parsePossibleDate(value) {
+  if (!value) return null;
+
+  const text = String(value).trim();
+
+  if (!text) return null;
+
+  const directDate = new Date(text);
+
+  if (!Number.isNaN(directDate.getTime())) {
+    return directDate.getTime();
+  }
+
+  return null;
+}
+
+function extractDateFromText(text) {
+  const value = String(text || "");
+
+  if (!value.trim()) return null;
+
+  const patterns = [
+    /\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b/g,
+    /\b(\d{1,2})[-/](\d{1,2})[-/](20\d{2})\b/g,
+    /\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(20\d{2})\b/gi,
+    /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(20\d{2})\b/gi,
+  ];
+
+  const dates = [];
+
+  for (const pattern of patterns) {
+    let match;
+
+    while ((match = pattern.exec(value)) !== null) {
+      let dateValue = null;
+
+      if (pattern === patterns[0]) {
+        dateValue = new Date(
+          Number(match[1]),
+          Number(match[2]) - 1,
+          Number(match[3])
+        ).getTime();
+      } else if (pattern === patterns[1]) {
+        dateValue = new Date(
+          Number(match[3]),
+          Number(match[2]) - 1,
+          Number(match[1])
+        ).getTime();
+      } else {
+        dateValue = new Date(match[0]).getTime();
+      }
+
+      if (!Number.isNaN(dateValue)) {
+        dates.push(dateValue);
+      }
+    }
+  }
+
+  if (!dates.length) return null;
+
+  return Math.min(...dates);
+}
+
+function getAlertMessage(item) {
+  return pick(
+    item,
+    ["message", "description", "reason", "title", "alert_message"],
+    ""
+  );
+}
+
+function getAlertSeverity(item) {
+  return String(pick(item, ["severity"], "unknown")).toLowerCase();
+}
+
+function getAlertType(item) {
+  return String(
+    pick(item, ["alert_type", "type", "category"], "unknown")
+  ).toLowerCase();
+}
+
+function getAlertVehicle(item) {
+  const message = getAlertMessage(item);
+
+  return (
+    pick(
+      item,
+      [
+        "vehicle_number",
+        "vehicle_no",
+        "registration_number",
+        "registration_no",
+        "reg_no",
+        "reg_number",
+        "vehicle_reg_no",
+        "bike_number",
+        "bike_no",
+        "number_plate",
+        "vehicle_id",
+        "bike_id",
+        "metadata.vehicle_number",
+        "metadata.registration_number",
+        "metadata.reg_no",
+      ],
+      ""
+    ) || extractVehicleFromMessage(message)
+  );
+}
+
+function getAlertLocation(item) {
+  return pick(item, ["location", "location_name", "branch", "station"], "-");
+}
+
+function getAlertDateValue(item) {
+  const directDate = pick(
+    item,
+    [
+      "alert_date",
+      "created_at",
+      "timestamp_utc",
+      "generated_at",
+      "due_date",
+      "expiry_date",
+      "expired_at",
+      "insurance_expiry",
+      "insurance_expiry_date",
+      "service_due_date",
+      "last_service_date",
+      "next_service_date",
+      "metadata.due_date",
+      "metadata.expiry_date",
+      "metadata.insurance_expiry",
+      "metadata.service_due_date",
+    ],
+    null
+  );
+
+  const parsedDirectDate = parsePossibleDate(directDate);
+
+  if (parsedDirectDate) return parsedDirectDate;
+
+  return extractDateFromText(getAlertMessage(item));
+}
+
+function formatAlertDate(dateValue) {
+  if (!dateValue) return "-";
+
+  return new Date(dateValue).toLocaleDateString("en-IN", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+  });
+}
+
+function getSeverityRank(severity) {
+  const value = String(severity || "").toLowerCase();
+
+  if (value === "critical") return 4;
+  if (value === "high") return 3;
+  if (value === "medium") return 2;
+  if (value === "low") return 1;
+
+  return 0;
+}
+
+function sortAlertItems(items, sortBy) {
+  const safeItems = [...items];
+
+  return safeItems.sort((a, b) => {
+    const severityA = getSeverityRank(getAlertSeverity(a));
+    const severityB = getSeverityRank(getAlertSeverity(b));
+
+    const dateA = getAlertDateValue(a) || 0;
+    const dateB = getAlertDateValue(b) || 0;
+
+    const vehicleA = String(getAlertVehicle(a) || "").toLowerCase();
+    const vehicleB = String(getAlertVehicle(b) || "").toLowerCase();
+
+    const locationA = String(getAlertLocation(a) || "").toLowerCase();
+    const locationB = String(getAlertLocation(b) || "").toLowerCase();
+
+    const typeA = String(getAlertType(a) || "").toLowerCase();
+    const typeB = String(getAlertType(b) || "").toLowerCase();
+
+    if (sortBy === "critical_first") {
+      if (severityB !== severityA) return severityB - severityA;
+      return dateA - dateB;
+    }
+
+    if (sortBy === "most_overdue") {
+      if (!dateA && !dateB) return severityB - severityA;
+      if (!dateA) return 1;
+      if (!dateB) return -1;
+      return dateA - dateB;
+    }
+
+    if (sortBy === "newest_date") {
+      return dateB - dateA;
+    }
+
+    if (sortBy === "oldest_date") {
+      return dateA - dateB;
+    }
+
+    if (sortBy === "vehicle") {
+      return vehicleA.localeCompare(vehicleB);
+    }
+
+    if (sortBy === "location") {
+      return locationA.localeCompare(locationB);
+    }
+
+    if (sortBy === "alert_type") {
+      return typeA.localeCompare(typeB);
+    }
+
+    return 0;
+  });
+}
+
 function getDepartmentDetailPayload(departmentDetail) {
   if (!departmentDetail) return null;
 
@@ -1183,6 +1404,15 @@ function DepartmentCard({ department, active, onClick }) {
 }
 
 function DepartmentDetailView({ departmentDetail }) {
+  const [filters, setFilters] = useState({
+    search: "",
+    severity: "all",
+    alertType: "all",
+    location: "",
+    sortBy: "critical_first",
+    limit: "50",
+  });
+
   const payload = getDepartmentDetailPayload(departmentDetail);
 
   if (!payload) {
@@ -1205,6 +1435,81 @@ function DepartmentDetailView({ departmentDetail }) {
   const low = getSeverityCount(summary, "low");
 
   const alertTypeEntries = Object.entries(alertTypeCount || {});
+
+  const alertTypeOptions = Array.from(
+    new Set(items.map((item) => getAlertType(item)).filter(Boolean))
+  ).sort();
+
+  const locationOptions = Array.from(
+    new Set(items.map((item) => getAlertLocation(item)).filter(Boolean))
+  ).sort();
+
+  const filteredItems = sortAlertItems(
+    items.filter((item) => {
+      const severity = getAlertSeverity(item);
+      const alertType = getAlertType(item);
+      const vehicle = getAlertVehicle(item);
+      const location = getAlertLocation(item);
+      const message = getAlertMessage(item);
+      const dateDisplay = formatAlertDate(getAlertDateValue(item));
+
+      const searchText = [
+        severity,
+        alertType,
+        vehicle,
+        location,
+        message,
+        dateDisplay,
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      const searchNeedle = filters.search.trim().toLowerCase();
+      const locationNeedle = filters.location.trim().toLowerCase();
+
+      if (filters.severity !== "all" && severity !== filters.severity) {
+        return false;
+      }
+
+      if (filters.alertType !== "all" && alertType !== filters.alertType) {
+        return false;
+      }
+
+      if (
+        locationNeedle &&
+        !String(location || "").toLowerCase().includes(locationNeedle)
+      ) {
+        return false;
+      }
+
+      if (searchNeedle && !searchText.includes(searchNeedle)) {
+        return false;
+      }
+
+      return true;
+    }),
+    filters.sortBy
+  );
+
+  const visibleItems = filteredItems.slice(0, Number(filters.limit));
+
+  function updateFilter(key, value) {
+    setFilters((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  }
+
+  function resetFilters() {
+    setFilters({
+      search: "",
+      severity: "all",
+      alertType: "all",
+      location: "",
+      sortBy: "critical_first",
+      limit: "50",
+    });
+  }
 
   return (
     <div className="department-detail-view">
@@ -1245,15 +1550,120 @@ function DepartmentDetailView({ departmentDetail }) {
         </div>
       ) : null}
 
-      <div className="alert-table-section">
-        <h3>Recent Alert Items</h3>
+      <div className="alert-filter-panel">
+        <div className="filter-header">
+          <div>
+            <p className="eyebrow">Department Filters</p>
+            <h3>Filter & Sort Alerts</h3>
+          </div>
 
-        {items.length ? (
+          <button className="ghost-button" onClick={resetFilters}>
+            Reset Filters
+          </button>
+        </div>
+
+        <div className="filter-grid">
+          <label>
+            Search vehicle/message
+            <input
+              value={filters.search}
+              onChange={(event) => updateFilter("search", event.target.value)}
+              placeholder="KA05 / insurance / service..."
+            />
+          </label>
+
+          <label>
+            Severity
+            <select
+              value={filters.severity}
+              onChange={(event) => updateFilter("severity", event.target.value)}
+            >
+              <option value="all">All Severities</option>
+              <option value="critical">Critical</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </select>
+          </label>
+
+          <label>
+            Alert Type
+            <select
+              value={filters.alertType}
+              onChange={(event) => updateFilter("alertType", event.target.value)}
+            >
+              <option value="all">All Alert Types</option>
+              {alertTypeOptions.map((type) => (
+                <option value={type} key={type}>
+                  {formatLabel(type)}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            Location
+            <input
+              list="department-location-options"
+              value={filters.location}
+              onChange={(event) => updateFilter("location", event.target.value)}
+              placeholder="Search location..."
+            />
+
+            <datalist id="department-location-options">
+              {locationOptions.map((location) => (
+                <option value={location} key={location} />
+              ))}
+            </datalist>
+          </label>
+
+          <label>
+            Sort By
+            <select
+              value={filters.sortBy}
+              onChange={(event) => updateFilter("sortBy", event.target.value)}
+            >
+              <option value="critical_first">Critical First</option>
+              <option value="most_overdue">Most Overdue First</option>
+              <option value="newest_date">Newest Date First</option>
+              <option value="oldest_date">Oldest Date First</option>
+              <option value="vehicle">Vehicle Number</option>
+              <option value="location">Location</option>
+              <option value="alert_type">Alert Type</option>
+            </select>
+          </label>
+
+          <label>
+            Show Limit
+            <select
+              value={filters.limit}
+              onChange={(event) => updateFilter("limit", event.target.value)}
+            >
+              <option value="25">25 alerts</option>
+              <option value="50">50 alerts</option>
+              <option value="100">100 alerts</option>
+              <option value="250">250 alerts</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="filter-result-bar">
+          Showing <strong>{formatValue(visibleItems.length)}</strong> of{" "}
+          <strong>{formatValue(filteredItems.length)}</strong> filtered alerts from{" "}
+          <strong>{formatValue(items.length)}</strong> loaded alerts.
+        </div>
+      </div>
+
+      <div className="alert-table-section">
+        <h3>Filtered Alert Items</h3>
+
+        {visibleItems.length ? (
           <div className="table-wrap">
             <table className="alert-table">
               <thead>
                 <tr>
                   <th>Severity</th>
+                  <th>Alert Date</th>
                   <th>Type</th>
                   <th>Vehicle</th>
                   <th>Location</th>
@@ -1262,56 +1672,21 @@ function DepartmentDetailView({ departmentDetail }) {
               </thead>
 
               <tbody>
-                {items.slice(0, 25).map((item, index) => {
-                  const severity = pick(item, ["severity"], "-");
-
-                  const type = pick(
-                    item,
-                    ["alert_type", "type", "category"],
-                    "-"
-                  );
-
-                  const message = pick(
-                    item,
-                    ["message", "description", "reason", "title", "alert_message"],
-                    "-"
-                  );
-
-                  const vehicle =
-                    pick(
-                      item,
-                      [
-                        "vehicle_number",
-                        "vehicle_no",
-                        "registration_number",
-                        "registration_no",
-                        "reg_no",
-                        "reg_number",
-                        "vehicle_reg_no",
-                        "bike_number",
-                        "bike_no",
-                        "number_plate",
-                        "vehicle_id",
-                        "bike_id",
-                        "metadata.vehicle_number",
-                        "metadata.registration_number",
-                        "metadata.reg_no",
-                      ],
-                      ""
-                    ) || extractVehicleFromMessage(message);
-
-                  const location = pick(
-                    item,
-                    ["location", "location_name", "branch", "station"],
-                    "-"
-                  );
+                {visibleItems.map((item, index) => {
+                  const severity = getAlertSeverity(item);
+                  const type = getAlertType(item);
+                  const message = getAlertMessage(item);
+                  const vehicle = getAlertVehicle(item);
+                  const location = getAlertLocation(item);
+                  const dateValue = getAlertDateValue(item);
 
                   return (
                     <tr key={`${vehicle}-${type}-${index}`}>
                       <td>
                         <StatusPill status={severity} />
                       </td>
-                      <td>{formatValue(type).replaceAll("_", " ")}</td>
+                      <td>{formatAlertDate(dateValue)}</td>
+                      <td>{formatLabel(type)}</td>
                       <td>{formatValue(vehicle)}</td>
                       <td>{formatValue(location)}</td>
                       <td>{formatValue(message)}</td>
@@ -1323,8 +1698,8 @@ function DepartmentDetailView({ departmentDetail }) {
           </div>
         ) : (
           <EmptyState
-            title="No alert items found"
-            message="The department summary loaded, but no item list was returned."
+            title="No alerts match these filters"
+            message="Try changing severity, alert type, location, search text, or sorting."
           />
         )}
       </div>
@@ -1336,6 +1711,7 @@ function DepartmentDetailView({ departmentDetail }) {
     </div>
   );
 }
+
 
 function App() {
   const chatBottomRef = useRef(null);
@@ -1613,7 +1989,7 @@ function App() {
     try {
       const encodedDepartment = encodeURIComponent(departmentName);
       const data = await apiGet(
-        `/dashboard/department/${encodedDepartment}?limit=25`,
+        `/dashboard/department/${encodedDepartment}?limit=250`,
         savedApiKey
       );
 
