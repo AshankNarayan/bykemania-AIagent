@@ -1408,25 +1408,102 @@ function App() {
 
   async function loadStatus() {
     setLoading((prev) => ({ ...prev, status: true }));
+
+    // Status checks are optional health indicators.
+    // Brave and some privacy-focused browsers may fail one of these small checks,
+    // while the main dashboard/chat/action endpoints still work.
     setError("");
 
+    const statusErrors = [];
+
     try {
-      const [rootData, healthData, readyData] = await Promise.all([
+      const [rootResult, healthResult, readyResult] = await Promise.allSettled([
         apiGet("/"),
         apiGet("/health"),
         apiGet("/ready"),
       ]);
 
-      setRootInfo(rootData);
-      setHealth(healthData);
-      setReady(readyData);
+      if (rootResult.status === "fulfilled") {
+        setRootInfo(rootResult.value);
+      } else {
+        setRootInfo({
+          version: "-",
+          environment: "status unavailable",
+        });
+
+        statusErrors.push(`Root: ${rootResult.reason?.message || "failed"}`);
+      }
+
+      if (healthResult.status === "fulfilled") {
+        setHealth(healthResult.value);
+      } else {
+        setHealth({
+          status: "unavailable",
+          service: "health check failed",
+        });
+
+        statusErrors.push(`Health: ${healthResult.reason?.message || "failed"}`);
+      }
+
+      if (readyResult.status === "fulfilled") {
+        setReady(readyResult.value);
+      } else {
+        setReady({
+          status: "unavailable",
+          database: "readiness check failed",
+        });
+
+        statusErrors.push(`Ready: ${readyResult.reason?.message || "failed"}`);
+      }
 
       if (savedApiKey) {
-        const schedulerData = await apiGet("/scheduler/status", savedApiKey);
-        setScheduler(schedulerData);
+        const [schedulerResult] = await Promise.allSettled([
+          apiGet("/scheduler/status", savedApiKey),
+        ]);
+
+        if (schedulerResult.status === "fulfilled") {
+          setScheduler(schedulerResult.value);
+        } else {
+          setScheduler({
+            scheduler: {
+              enabled: "unavailable",
+            },
+          });
+
+          statusErrors.push(
+            `Scheduler: ${schedulerResult.reason?.message || "failed"}`
+          );
+        }
+      } else {
+        setScheduler(null);
+      }
+
+      if (statusErrors.length) {
+        console.warn("Partial status load issue:", statusErrors);
       }
     } catch (err) {
-      setError(err.message);
+      console.error("Unexpected status load error:", err);
+
+      setRootInfo({
+        version: "-",
+        environment: "status unavailable",
+      });
+
+      setHealth({
+        status: "unavailable",
+        service: "health check failed",
+      });
+
+      setReady({
+        status: "unavailable",
+        database: "readiness check failed",
+      });
+
+      setScheduler({
+        scheduler: {
+          enabled: "unavailable",
+        },
+      });
     } finally {
       setLoading((prev) => ({ ...prev, status: false }));
     }
